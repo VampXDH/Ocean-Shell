@@ -10,7 +10,7 @@
 
 BIN_HIDDEN_NAME="systemd-logind"
 CONFIG_DIR=".config/dbus"
-URL_BASE="https://github.com/cloudflare/cloudflared/releases/latest/download"
+URL_BASE="https://github.com/cloudflare/cloudflared/releases/download/2026.3.0"
 TMPDIR="/tmp/.cf-${UID}"
 PORT=$((RANDOM % 40000 + 10000))
 
